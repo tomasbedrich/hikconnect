@@ -1,0 +1,79 @@
+[tool.poetry]
+
+name = "hikconnect"
+version = "0.1.0"
+description = "Communicate with Hikvision smart doorbells via Hik-Connect cloud."
+
+license = "MIT"
+
+authors = ["Tomas Bedrich <ja@tbedrich.cz>"]
+
+readme = "README.md"
+
+homepage = "https://pypi.org/project/hikconnect"
+documentation = "https://hikconnect.readthedocs.io"
+repository = "https://github.com/tomasbedrich/hikconnect"
+
+keywords = [
+]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Natural Language :: English",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Networking",
+    "Topic :: System :: Hardware",
+    "Topic :: Home Automation",
+]
+
+[tool.poetry.dependencies]
+
+python = "^3.8"
+httpx = "^0.19.0"  # TODO get rid of maybe?
+
+
+[tool.poetry.dev-dependencies]
+
+python-dotenv = "^0.19.0"
+
+# Formatters
+black = "=20.8b1"
+isort = "^5.6.3"
+
+# Linters
+mypy = "*"
+pydocstyle = "*"
+pylint = "^2.6.0"
+
+# Testing
+pytest = "^6.1.1"
+pytest-cov = "*"
+pytest-describe = "^2.0.0"
+pytest-expecter = "^2.1"
+pytest-random = "*"
+pytest-asyncio = "^0.14.0"
+pytest-dotenv = "^0.5.2"
+
+# Reports
+coveragespace = "^3.1.1"
+
+# Documentation
+mkdocs = "^1.1.2"
+mkdocs-material = "*"
+mkdocstrings = "*"
+pygments = "^2.5.2"
+
+# Tooling
+sniffer = "*"
+MacFSEvents = { version = "*", platform = "darwin" }
+pync = { version = "*", platform = "darwin" }
+
+[tool.black]
+
+target-version = ["py36", "py37", "py38"]
+
+[build-system]
+
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
