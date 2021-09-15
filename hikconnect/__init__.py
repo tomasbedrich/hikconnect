@@ -59,6 +59,23 @@ class HikConnect:
         self.client.headers.update({"sessionId": session_id})
         log.info("Login successful as username '%s'", username)
 
+    async def get_devices(self):
+        """Get info about devices associated with currently logged user."""
+        res = await self.client.get(f"{self.BASE_URL}/v3/userdevices/v1/devices/pagelist?groupId=-1&limit=100&offset=0")
+        res.raise_for_status()
+        log.info("Received device list")
+        json = res.json()
+        for device in json["deviceInfos"]:
+            yield {
+                "id": device["fullSerial"],
+                "name": device["name"],
+                "serial": device["deviceSerial"],
+                "type": device["deviceType"],
+                "version": device["version"],
+            }
+        if json["page"]["hasNext"]:
+            raise ValueError("More than 100 devices is not supported yet. Please file an issue on GitHub.")
+
     async def get_cameras(self, device_serial: str):
         """Get info about cameras connected to a device."""
         res = await self.client.get(f"{self.BASE_URL}/v3/userdevices/v1/cameras/info?deviceSerial={device_serial}")
@@ -74,16 +91,21 @@ class HikConnect:
             }
 
     async def unlock(self, device_serial: str, channel_number: int):
+        """Send unlock request for given channel of given device."""
         res = await self.client.put(
             f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/{channel_number}/remote/unlock?srcId=1&lockId=0&userType=0"
         )
         res.raise_for_status()
         log.info("Unlocked device '%s' channel '%d'", device_serial, channel_number)
 
-    async def get_callstatus(self, device_serial: str):
+    async def get_call_status(self, device_serial: str):
         res = await self.client.get(
             f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/status"
         )
         res.raise_for_status()
         log.info("Got call status for device '%s'", device_serial)
-        return res.json()["data"]  # TODO parse
+        json = res.json()
+        # TODO parse
+        # At rest looks like this:
+        # {"apiId":1,"callStatus":1,"verFlag":1,"callerInfo":{"buildingNo":0,"floorNo":0,"zoneNo":0,"unitNo":0,"devNo":0,"devType":0,"lockNum":0},"rc":1}
+        return json["data"]

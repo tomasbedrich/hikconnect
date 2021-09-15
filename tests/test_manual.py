@@ -12,17 +12,21 @@ pytestmark = pytest.mark.asyncio
 
 
 async def test_main():
-    device_serial = os.getenv("HIKCONNECT_DEVICE_SERIAL")
     username = os.getenv("HIKCONNECT_USERNAME")
     password = os.getenv("HIKCONNECT_PASSWORD")
-    channel_number = int(os.getenv("HIKCONNECT_CHANNEL_NUMBER"))
+    channel_number = int(os.getenv("HIKCONNECT_CHANNEL_NUMBER", 1))
 
     async with HikConnect() as hikconnect:
         await hikconnect.login(username, password)
-        async for camera in hikconnect.get_cameras(device_serial):
-            print(camera)
-        print(await hikconnect.get_callstatus(device_serial))
-        # await hikconnect.unlock(device_serial, channel_number)
+        devices = [device async for device in hikconnect.get_devices()]
+        for device in devices:
+            print(await hikconnect.get_call_status(device["serial"]))
+            async for camera in hikconnect.get_cameras(device["serial"]):
+                print(device, camera)
+
+        # BEWARE: actually unlocks door!
+        print(f"hikconnect.unlock({devices[0]['serial']=}, {channel_number=})")
+        # await hikconnect.unlock(devices[0]["serial"], channel_number)
 
 
 if __name__ == "__main__":
