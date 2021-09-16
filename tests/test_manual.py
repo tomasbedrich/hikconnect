@@ -5,8 +5,7 @@ import os
 import pytest
 from dotenv import load_dotenv
 
-from hikconnect import HikConnect
-
+from hikconnect.api import HikConnect
 
 pytestmark = pytest.mark.asyncio
 

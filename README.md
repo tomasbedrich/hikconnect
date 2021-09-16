@@ -1,7 +1,7 @@
 # Usage
 
 ```python
-from hikconnect import HikConnect
+from hikconnect.api import HikConnect
 
 async with HikConnect() as cloud:
 
