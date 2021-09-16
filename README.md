@@ -3,11 +3,11 @@
 ```python
 from hikconnect.api import HikConnect
 
-async with HikConnect() as cloud:
+async with HikConnect() as api:
 
-    await cloud.login("foo", "bar")
-    
-    devices = [device async for device in cloud.get_devices()]
+    await api.login("foo", "bar")
+
+    devices = [device async for device in api.get_devices()]
     print(devices)
     # [{
     #   'id': 'DS-XXXXXX-YYYYYYYYYYYYYYYYYYYYYYYYY',
@@ -16,10 +16,10 @@ async with HikConnect() as cloud:
     #   'type': 'DS-XXXXXX-Y',
     #   'version': 'V1.2.3 build 123456'
     # }]
-    
+
     my_device_serial = devices[0]["serial"]
 
-    cameras = [camera async for camera in cloud.get_cameras(my_device_serial)]
+    cameras = [camera async for camera in api.get_cameras(my_device_serial)]
     print(cameras)
     # [
     #   {'id': '4203fd7c5f89ce96f8ff0adfdbe8b731', 'name': 'foo', 'channel_number': 1, 'signal_status': 1, 'is_shown': 0},
@@ -27,11 +27,11 @@ async with HikConnect() as cloud:
     #   {'id': 'd2a2057d853438d9a5b4954baec136e3', 'name': 'baz', 'channel_number': 3, 'signal_status': 0, 'is_shown': %}
     # ]
 
-    call_status = await cloud.get_call_status(my_device_serial)
+    call_status = await api.get_call_status(my_device_serial)
     print(call_status)
     # {"apiId":1,"callStatus":1,"verFlag":1,"callerInfo":{"buildingNo":0,"floorNo":0,"zoneNo":0,"unitNo":0,"devNo":0,"devType":0,"lockNum":0},"rc":1}
 
     # call this periodically at least once per 30 mins!
-    if cloud.is_refresh_login_needed():
-        await cloud.refresh_login()
+    if api.is_refresh_login_needed():
+        await api.refresh_login()
 ```

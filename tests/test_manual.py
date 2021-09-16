@@ -15,22 +15,22 @@ async def test_main():
     password = os.getenv("HIKCONNECT_PASSWORD")
     channel_number = int(os.getenv("HIKCONNECT_CHANNEL_NUMBER", 1))
 
-    async with HikConnect() as hikconnect:
-        await hikconnect.login(username, password)
-        print(f"{hikconnect.is_refresh_login_needed()=}")
+    async with HikConnect() as api:
+        await api.login(username, password)
+        print(f"{api.is_refresh_login_needed()=}")
 
-        devices = [device async for device in hikconnect.get_devices()]
+        devices = [device async for device in api.get_devices()]
         for device in devices:
-            print(await hikconnect.get_call_status(device["serial"]))
-            async for camera in hikconnect.get_cameras(device["serial"]):
+            print(await api.get_call_status(device["serial"]))
+            async for camera in api.get_cameras(device["serial"]):
                 print(device, camera)
 
         await asyncio.sleep(1)
-        await hikconnect.refresh_login()
+        await api.refresh_login()
 
         # BEWARE: actually unlocks door!
-        print(f"hikconnect.unlock({devices[0]['serial']=}, {channel_number=})")
-        # await hikconnect.unlock(devices[0]["serial"], channel_number)
+        print(f"api.unlock({devices[0]['serial']=}, {channel_number=})")
+        # await api.unlock(devices[0]["serial"], channel_number)
 
 
 if __name__ == "__main__":
