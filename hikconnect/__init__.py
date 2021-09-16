@@ -41,7 +41,7 @@ class HikConnect:
         res.raise_for_status()
         res_json = res.json()
 
-        if res_json["meta"]["code"] == 1014:
+        if res_json["meta"]["code"] in (1013, 1014):
             raise ValueError("Login failed, probably wrong username/password combination.")
 
         if res_json["meta"]["code"] == 1015:
