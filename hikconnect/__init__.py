@@ -30,6 +30,9 @@ class HikConnect:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.client.__aexit__(exc_type, exc_val, exc_tb)
 
+    async def close(self):
+        await self.client.aclose()
+
     async def login(self, username: str, password: str):
         """Login to HikConnect and save state for use by other methods."""
         data = {
