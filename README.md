@@ -30,4 +30,8 @@ async with HikConnect() as cloud:
     call_status = await cloud.get_call_status(my_device_serial)
     print(call_status)
     # {"apiId":1,"callStatus":1,"verFlag":1,"callerInfo":{"buildingNo":0,"floorNo":0,"zoneNo":0,"unitNo":0,"devNo":0,"devType":0,"lockNum":0},"rc":1}
+
+    # call this periodically at least once per 30 mins!
+    if cloud.is_refresh_login_needed():
+        await cloud.refresh_login()
 ```

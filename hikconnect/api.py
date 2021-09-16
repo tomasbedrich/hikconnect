@@ -1,7 +1,9 @@
+import datetime
 import hashlib
 import logging
 from contextlib import contextmanager
 
+import jwt
 from httpx import AsyncClient
 
 from hikconnect.exceptions import LoginError
@@ -41,6 +43,7 @@ class HikConnect:
 
     def __init__(self):
         self._refresh_session_id = None
+        self.login_valid_until = None
         self.client = _HikConnectClient()
 
     async def login(self, username: str, password: str):
@@ -64,18 +67,14 @@ class HikConnect:
 
         try:
             session_id = res_json["loginSession"]["sessionId"]
-            log.debug("Parsed session_id '%s'", session_id)
-            self.client.set_session_id(session_id)
         except KeyError as e:
-            log.exception("Unable to parse session_id from response.")
-            raise LoginError("Login failed for unknown reason.") from e
-
+            raise LoginError("Unable to parse session_id from response.") from e
         try:
-            self._refresh_session_id = res_json["loginSession"]["rfSessionId"]
-            log.debug("Parsed refresh_session_id '%s'", self._refresh_session_id)
+            refresh_session_id = res_json["loginSession"]["rfSessionId"]
         except KeyError as e:
-            log.exception("Unable to parse refresh_session_id from response.")
-            raise LoginError("Login failed for unknown reason.") from e
+            raise LoginError("Unable to parse refresh_session_id from response.") from e
+
+        self._handle_login_response(session_id, refresh_session_id)
 
         log.info("Login successful as username '%s'", username)
 
@@ -93,20 +92,27 @@ class HikConnect:
 
         try:
             session_id = res_json["sessionInfo"]["sessionId"]
-            log.debug("Parsed session_id '%s'", session_id)
-            self.client.set_session_id(session_id)
         except KeyError as e:
-            log.exception("Unable to parse session_id from response.")
-            raise LoginError("Refresh login failed for unknown reason.") from e
-
+            raise LoginError("Unable to parse session_id from response.") from e
         try:
-            self._refresh_session_id = res_json["sessionInfo"]["refreshSessionId"]
-            log.debug("Parsed refresh_session_id '%s'", self._refresh_session_id)
+            refresh_session_id = res_json["sessionInfo"]["refreshSessionId"]
         except KeyError as e:
-            log.exception("Unable to parse refresh_session_id from response.")
-            raise LoginError("Login failed for unknown reason.") from e
+            raise LoginError("Unable to parse refresh_session_id from response.") from e
+
+        self._handle_login_response(session_id, refresh_session_id)
 
         log.info("Login refreshed successfuly")
+
+    def _handle_login_response(self, session_id, refresh_session_id):
+        self.client.set_session_id(session_id)
+        token = jwt.decode(session_id, options={"verify_signature": False})
+        self.login_valid_until = datetime.datetime.fromtimestamp(token["exp"])
+        log.debug("Parsed session_id '%s', valid until %s", session_id, self.login_valid_until)
+        self._refresh_session_id = refresh_session_id
+        log.debug("Parsed refresh_session_id '%s'", self._refresh_session_id)
+
+    def is_refresh_login_needed(self):
+        return (self.login_valid_until - datetime.datetime.now()) < datetime.timedelta(hours=1)
 
     async def get_devices(self):
         """Get info about devices associated with currently logged user."""

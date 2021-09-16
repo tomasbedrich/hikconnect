@@ -17,6 +17,7 @@ async def test_main():
 
     async with HikConnect() as hikconnect:
         await hikconnect.login(username, password)
+        print(f"{hikconnect.is_refresh_login_needed()=}")
 
         devices = [device async for device in hikconnect.get_devices()]
         for device in devices:
