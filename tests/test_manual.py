@@ -18,11 +18,15 @@ async def test_main():
 
     async with HikConnect() as hikconnect:
         await hikconnect.login(username, password)
+
         devices = [device async for device in hikconnect.get_devices()]
         for device in devices:
             print(await hikconnect.get_call_status(device["serial"]))
             async for camera in hikconnect.get_cameras(device["serial"]):
                 print(device, camera)
+
+        await asyncio.sleep(1)
+        await hikconnect.refresh_login()
 
         # BEWARE: actually unlocks door!
         print(f"hikconnect.unlock({devices[0]['serial']=}, {channel_number=})")
