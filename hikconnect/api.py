@@ -1,9 +1,10 @@
 import datetime
 import hashlib
+import json
 import logging
+from base64 import urlsafe_b64decode
 from contextlib import contextmanager
 
-import jwt
 from httpx import AsyncClient
 
 from hikconnect.exceptions import LoginError
@@ -105,8 +106,7 @@ class HikConnect:
 
     def _handle_login_response(self, session_id, refresh_session_id):
         self.client.set_session_id(session_id)
-        token = jwt.decode(session_id, options={"verify_signature": False})
-        self.login_valid_until = datetime.datetime.fromtimestamp(token["exp"])
+        self.login_valid_until = self._decode_jwt_expiration(session_id)
         log.debug("Parsed session_id '%s', valid until %s", session_id, self.login_valid_until)
         self._refresh_session_id = refresh_session_id
         log.debug("Parsed refresh_session_id '%s'", self._refresh_session_id)
@@ -166,6 +166,18 @@ class HikConnect:
         # At rest looks like this:
         # {"apiId":1,"callStatus":1,"verFlag":1,"callerInfo":{"buildingNo":0,"floorNo":0,"zoneNo":0,"unitNo":0,"devNo":0,"devType":0,"lockNum":0},"rc":1}
         return res_json["data"]
+
+    @staticmethod
+    def _decode_jwt_expiration(jwt):
+        # decode JWT manually because of PyJWT version incompatibility with HomeAssistant
+        parts = jwt.split(".")
+        claims_raw = parts[1]
+        missing_padding = len(claims_raw) % 4
+        if missing_padding:
+            claims_raw += '=' * (4 - missing_padding)
+        claims_json_raw = urlsafe_b64decode(claims_raw)
+        claims = json.loads(claims_json_raw)
+        return datetime.datetime.fromtimestamp(claims["exp"])
 
     async def __aenter__(self):
         await self.client.__aenter__()

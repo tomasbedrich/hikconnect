@@ -1,7 +1,7 @@
 [tool.poetry]
 
 name = "hikconnect"
-version = "0.4.0"
+version = "0.5.0"
 description = "Communicate with Hikvision smart doorbells via Hik-Connect cloud."
 
 license = "MIT"
@@ -31,7 +31,6 @@ classifiers = [
 
 python = "^3.8"
 httpx = "^0.19.0"  # TODO get rid of maybe?
-PyJWT = "^2.1.0"
 
 
 [tool.poetry.dev-dependencies]
