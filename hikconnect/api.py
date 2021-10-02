@@ -125,10 +125,15 @@ class HikConnect:
         log.info("Received device list")
         for device in res_json["deviceInfos"]:
             serial = device["deviceSerial"]
-            locks_json = json.loads(res_json["statusInfos"][serial]["optionals"]["lockNum"])
-            # "lockNum" format: {"1":1,"2":1,"3":1,"4":1,"5":1,"6":1,"7":1,"8":1}
-            # which means (guessing): <channel number>: <number of locks connected>
-            locks = {int(k): v for k, v in locks_json.items()}
+            try:
+                locks_json = json.loads(res_json["statusInfos"][serial]["optionals"]["lockNum"])
+                # "lockNum" format: {"1":1,"2":1,"3":1,"4":1,"5":1,"6":1,"7":1,"8":1}
+                # which means (guessing): <channel number>: <number of locks connected>
+                locks = {int(k): v for k, v in locks_json.items()}
+            except KeyError:
+                # some devices doesn't have "lockNum"
+                # (for example https://www.hikvision.com/cz/products/IP-Products/Network-Video-Recorders/Pro-Series/ds-7608ni-k2-8p/)
+                locks = {}
             yield {
                 "id": device["fullSerial"],
                 "name": device["name"],
