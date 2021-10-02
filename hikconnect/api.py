@@ -116,18 +116,26 @@ class HikConnect:
 
     async def get_devices(self):
         """Get info about devices associated with currently logged user."""
-        res = await self.client.get(f"{self.BASE_URL}/v3/userdevices/v1/devices/pagelist?groupId=-1&limit=100&offset=0")
+        res = await self.client.get(
+            f"{self.BASE_URL}/v3/userdevices/v1/devices/pagelist?groupId=-1&limit=100&offset=0&filter=TIME_PLAN,CONNECTION,SWITCH,STATUS,STATUS_EXT,WIFI,NODISTURB,P2P,KMS,HIDDNS"
+        )
         res.raise_for_status()
         res_json = res.json()
         log.debug("Got device list response '%s'", res_json)
         log.info("Received device list")
         for device in res_json["deviceInfos"]:
+            serial = device["deviceSerial"]
+            locks_json = json.loads(res_json["statusInfos"][serial]["optionals"]["lockNum"])
+            # "lockNum" format: {"1":1,"2":1,"3":1,"4":1,"5":1,"6":1,"7":1,"8":1}
+            # which means (guessing): <channel number>: <number of locks connected>
+            locks = {int(k): v for k, v in locks_json.items()}
             yield {
                 "id": device["fullSerial"],
                 "name": device["name"],
-                "serial": device["deviceSerial"],
+                "serial": serial,
                 "type": device["deviceType"],
                 "version": device["version"],
+                "locks": locks,
             }
         if res_json["page"]["hasNext"]:
             raise ValueError("More than 100 devices is not supported yet. Please file an issue on GitHub.")
@@ -148,13 +156,20 @@ class HikConnect:
                 "is_shown": camera["isShow"],
             }
 
-    async def unlock(self, device_serial: str, channel_number: int):
-        """Send unlock request for given channel of given device."""
+    async def unlock(self, device_serial: str, channel_number: int, lock_index: int = 0):
+        """
+        Send unlock request.
+
+        The `device_serial`, `channel_number` parameters can be obtained from `get_devices()` and/or `get_cameras()`.
+        Pay special attention to `locks` item in `get_devices()` response. Not only it tells you which cameras
+        has "unlock capability". Also if there is more than one lock connected to a door station,
+        you can specify `lock_index` parameter to control which lock to open. The `lock_index` starts with zero!
+        """
         res = await self.client.put(
-            f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/{channel_number}/remote/unlock?srcId=1&lockId=0&userType=0"
+            f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/{channel_number}/remote/unlock?srcId=1&lockId={lock_index}&userType=0"
         )
         res.raise_for_status()
-        log.info("Unlocked device '%s' channel '%d'", device_serial, channel_number)
+        log.info("Unlocked device '%s' channel '%d' lock_index '%d'", device_serial, channel_number, lock_index)
 
     async def get_call_status(self, device_serial: str):
         res = await self.client.get(f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/status")
@@ -174,7 +189,7 @@ class HikConnect:
         claims_raw = parts[1]
         missing_padding = len(claims_raw) % 4
         if missing_padding:
-            claims_raw += '=' * (4 - missing_padding)
+            claims_raw += "=" * (4 - missing_padding)
         claims_json_raw = urlsafe_b64decode(claims_raw)
         claims = json.loads(claims_json_raw)
         return datetime.datetime.fromtimestamp(claims["exp"])

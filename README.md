@@ -14,8 +14,11 @@ async with HikConnect() as api:
     #   'name': 'DS-XXXXXX-Y(ZZZZZZZZZ)',
     #   'serial': 'ZZZZZZZZZ',
     #   'type': 'DS-XXXXXX-Y',
-    #   'version': 'V1.2.3 build 123456'
+    #   'version': 'V1.2.3 build 123456',
+    #   'locks': {1: 2, 2: 0, 3: 1}
     # }]
+    
+    # locks data means (guessing): <channel number>: <number of locks connected>
 
     my_device_serial = devices[0]["serial"]
 
