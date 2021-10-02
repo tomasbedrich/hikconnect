@@ -1,7 +1,7 @@
 [tool.poetry]
 
 name = "hikconnect"
-version = "0.5.0"
+version = "0.6.0"
 description = "Communicate with Hikvision smart doorbells via Hik-Connect cloud."
 
 license = "MIT"
