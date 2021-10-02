@@ -24,12 +24,14 @@ async with HikConnect() as api:
     # [
     #   {'id': '4203fd7c5f89ce96f8ff0adfdbe8b731', 'name': 'foo', 'channel_number': 1, 'signal_status': 1, 'is_shown': 0},
     #   {'id': 'cd72bc923956952194468738123b7a5e', 'name': 'bar', 'channel_number': 2, 'signal_status': 1, 'is_shown': 1},
-    #   {'id': 'd2a2057d853438d9a5b4954baec136e3', 'name': 'baz', 'channel_number': 3, 'signal_status': 0, 'is_shown': %}
+    #   {'id': 'd2a2057d853438d9a5b4954baec136e3', 'name': 'baz', 'channel_number': 3, 'signal_status': 0, 'is_shown': 0}
     # ]
 
     call_status = await api.get_call_status(my_device_serial)
     print(call_status)
     # {"apiId":1,"callStatus":1,"verFlag":1,"callerInfo":{"buildingNo":0,"floorNo":0,"zoneNo":0,"unitNo":0,"devNo":0,"devType":0,"lockNum":0},"rc":1}
+    
+    await api.unlock(my_device_serial, 1)
 
     # call this periodically at least once per 30 mins!
     if api.is_refresh_login_needed():
