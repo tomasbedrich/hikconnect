@@ -40,7 +40,7 @@ class _HikConnectClient(AsyncClient):
 
 
 class HikConnect:
-    BASE_URL = "https://apiieu.hik-connect.com"
+    BASE_URL = "https://api.hik-connect.com"
 
     def __init__(self):
         self._refresh_session_id = None
