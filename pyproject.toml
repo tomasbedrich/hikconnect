@@ -30,7 +30,7 @@ classifiers = [
 [tool.poetry.dependencies]
 
 python = "^3.8"
-httpx = "^0.19.0"  # TODO get rid of maybe?
+aiohttp = "^3.7.4"
 
 
 [tool.poetry.dev-dependencies]

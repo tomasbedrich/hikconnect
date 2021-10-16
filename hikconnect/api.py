@@ -5,23 +5,23 @@ import logging
 from base64 import urlsafe_b64decode
 from contextlib import contextmanager
 
-from httpx import AsyncClient
+from aiohttp import ClientSession
 
 from hikconnect.exceptions import LoginError
 
 log = logging.getLogger(__name__)
 
 
-class _HikConnectClient(AsyncClient):
+class _HikConnectClient(ClientSession):
     FEATURE_CODE = "deadbeef"  # any non-empty hex string works
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.headers = {
+    def __init__(self):
+        headers = {
             "clientType": "55",
             "lang": "en-US",
             "featureCode": self.FEATURE_CODE,
         }
+        super().__init__(raise_for_status=True, headers=headers)
 
     def set_session_id(self, session_id):
         self.headers.update({"sessionId": session_id})
@@ -54,9 +54,8 @@ class HikConnect:
             "password": hashlib.md5(password.encode("utf-8")).hexdigest(),
             # "imageCode": "",  # required when CAPTCHA is presented - plaintext captcha input
         }
-        res = await self.client.post(f"{self.BASE_URL}/v3/users/login/v2", data=data)
-        res.raise_for_status()
-        res_json = res.json()
+        async with self.client.post(f"{self.BASE_URL}/v3/users/login/v2", data=data) as res:
+            res_json = await res.json()
         log.debug("Got login response '%s'", res_json)
 
         if res_json["meta"]["code"] in (1013, 1014):
@@ -86,9 +85,8 @@ class HikConnect:
             "featureCode": _HikConnectClient.FEATURE_CODE,
         }
         with self.client.without_session_id() as client:
-            res = await client.put(f"{self.BASE_URL}/v3/apigateway/login", data=data)
-        res.raise_for_status()
-        res_json = res.json()
+            async with client.put(f"{self.BASE_URL}/v3/apigateway/login", data=data) as res:
+                res_json = await res.json()
         log.debug("Got refresh login response '%s'", res_json)
 
         try:
@@ -116,11 +114,10 @@ class HikConnect:
 
     async def get_devices(self):
         """Get info about devices associated with currently logged user."""
-        res = await self.client.get(
+        async with self.client.get(
             f"{self.BASE_URL}/v3/userdevices/v1/devices/pagelist?groupId=-1&limit=100&offset=0&filter=TIME_PLAN,CONNECTION,SWITCH,STATUS,STATUS_EXT,WIFI,NODISTURB,P2P,KMS,HIDDNS"
-        )
-        res.raise_for_status()
-        res_json = res.json()
+        ) as res:
+            res_json = await res.json()
         log.debug("Got device list response '%s'", res_json)
         log.info("Received device list")
         for device in res_json["deviceInfos"]:
@@ -147,9 +144,8 @@ class HikConnect:
 
     async def get_cameras(self, device_serial: str):
         """Get info about cameras connected to a device."""
-        res = await self.client.get(f"{self.BASE_URL}/v3/userdevices/v1/cameras/info?deviceSerial={device_serial}")
-        res.raise_for_status()
-        res_json = res.json()
+        async with self.client.get(f"{self.BASE_URL}/v3/userdevices/v1/cameras/info?deviceSerial={device_serial}") as res:
+            res_json = await res.json()
         log.debug("Got camera list response '%s'", res_json)
         log.info("Received camera info for device '%s'", device_serial)
         for camera in res_json["cameraInfos"]:
@@ -170,16 +166,16 @@ class HikConnect:
         has "unlock capability". Also if there is more than one lock connected to a door station,
         you can specify `lock_index` parameter to control which lock to open. The `lock_index` starts with zero!
         """
-        res = await self.client.put(
+        async with self.client.put(
             f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/{channel_number}/remote/unlock?srcId=1&lockId={lock_index}&userType=0"
-        )
-        res.raise_for_status()
+        ) as res:
+            res_json = await res.json()
+        log.debug("Got unlock response '%s'", res_json)
         log.info("Unlocked device '%s' channel '%d' lock_index '%d'", device_serial, channel_number, lock_index)
 
     async def get_call_status(self, device_serial: str):
-        res = await self.client.get(f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/status")
-        res.raise_for_status()
-        res_json = res.json()
+        async with self.client.get(f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/status") as res:
+            res_json = await res.json()
         log.debug("Got call status response '%s'", res_json)
         log.info("Got call status for device '%s'", device_serial)
         # TODO parse
@@ -207,4 +203,4 @@ class HikConnect:
         await self.client.__aexit__(exc_type, exc_val, exc_tb)
 
     async def close(self):
-        await self.client.aclose()
+        await self.client.close()
