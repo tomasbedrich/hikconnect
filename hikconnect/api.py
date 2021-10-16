@@ -144,7 +144,9 @@ class HikConnect:
 
     async def get_cameras(self, device_serial: str):
         """Get info about cameras connected to a device."""
-        async with self.client.get(f"{self.BASE_URL}/v3/userdevices/v1/cameras/info?deviceSerial={device_serial}") as res:
+        async with self.client.get(
+            f"{self.BASE_URL}/v3/userdevices/v1/cameras/info?deviceSerial={device_serial}"
+        ) as res:
             res_json = await res.json()
         log.debug("Got camera list response '%s'", res_json)
         log.info("Received camera info for device '%s'", device_serial)
