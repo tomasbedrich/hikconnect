@@ -54,15 +54,21 @@ class HikConnect:
             "password": hashlib.md5(password.encode("utf-8")).hexdigest(),
             # "imageCode": "",  # required when CAPTCHA is presented - plaintext captcha input
         }
-        async with self.client.post(f"{self.BASE_URL}/v3/users/login/v2", data=data) as res:
+        async with self.client.post(
+            f"{self.BASE_URL}/v3/users/login/v2", data=data
+        ) as res:
             res_json = await res.json()
         log.debug("Got login response '%s'", res_json)
 
         if res_json["meta"]["code"] in (1013, 1014):
-            raise LoginError("Login failed, probably wrong username/password combination.")
+            raise LoginError(
+                "Login failed, probably wrong username/password combination."
+            )
 
         if res_json["meta"]["code"] == 1015:
-            raise LoginError("CAPTCHA hit, please login using Hik-Connect app and then retry.")
+            raise LoginError(
+                "CAPTCHA hit, please login using Hik-Connect app and then retry."
+            )
             # GET v3/captcha?account=tomasbedrich&featureCode=deadbeef => receives PNG with CATPCHA, the code must be send with next request inside `imageCode` field
 
         try:
@@ -85,7 +91,9 @@ class HikConnect:
             "featureCode": _HikConnectClient.FEATURE_CODE,
         }
         with self.client.without_session_id() as client:
-            async with client.put(f"{self.BASE_URL}/v3/apigateway/login", data=data) as res:
+            async with client.put(
+                f"{self.BASE_URL}/v3/apigateway/login", data=data
+            ) as res:
                 res_json = await res.json()
         log.debug("Got refresh login response '%s'", res_json)
 
@@ -105,12 +113,16 @@ class HikConnect:
     def _handle_login_response(self, session_id, refresh_session_id):
         self.client.set_session_id(session_id)
         self.login_valid_until = self._decode_jwt_expiration(session_id)
-        log.debug("Parsed session_id '%s', valid until %s", session_id, self.login_valid_until)
+        log.debug(
+            "Parsed session_id '%s', valid until %s", session_id, self.login_valid_until
+        )
         self._refresh_session_id = refresh_session_id
         log.debug("Parsed refresh_session_id '%s'", self._refresh_session_id)
 
     def is_refresh_login_needed(self):
-        return (self.login_valid_until - datetime.datetime.now()) < datetime.timedelta(hours=1)
+        return (self.login_valid_until - datetime.datetime.now()) < datetime.timedelta(
+            hours=1
+        )
 
     async def get_devices(self):
         """Get info about devices associated with currently logged user."""
@@ -125,7 +137,9 @@ class HikConnect:
             for device in res_json["deviceInfos"]:
                 serial = device["deviceSerial"]
                 try:
-                    locks_json = json.loads(res_json["statusInfos"][serial]["optionals"]["lockNum"])
+                    locks_json = json.loads(
+                        res_json["statusInfos"][serial]["optionals"]["lockNum"]
+                    )
                     # "lockNum" format: {"1":1,"2":1,"3":1,"4":1,"5":1,"6":1,"7":1,"8":1}
                     # which means (guessing): <channel number>: <number of locks connected>
                     locks = {int(k): v for k, v in locks_json.items()}
@@ -161,7 +175,9 @@ class HikConnect:
                 "is_shown": camera["isShow"],
             }
 
-    async def unlock(self, device_serial: str, channel_number: int, lock_index: int = 0):
+    async def unlock(
+        self, device_serial: str, channel_number: int, lock_index: int = 0
+    ):
         """
         Send unlock request.
 
@@ -175,10 +191,17 @@ class HikConnect:
         ) as res:
             res_json = await res.json()
         log.debug("Got unlock response '%s'", res_json)
-        log.info("Unlocked device '%s' channel '%d' lock_index '%d'", device_serial, channel_number, lock_index)
+        log.info(
+            "Unlocked device '%s' channel '%d' lock_index '%d'",
+            device_serial,
+            channel_number,
+            lock_index,
+        )
 
     async def get_call_status(self, device_serial: str):
-        async with self.client.get(f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/status") as res:
+        async with self.client.get(
+            f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/status"
+        ) as res:
             res_json = await res.json()
         log.debug("Got call status response '%s'", res_json)
         log.info("Got call status for device '%s'", device_serial)
