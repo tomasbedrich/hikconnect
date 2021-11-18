@@ -114,33 +114,35 @@ class HikConnect:
 
     async def get_devices(self):
         """Get info about devices associated with currently logged user."""
-        async with self.client.get(
-            f"{self.BASE_URL}/v3/userdevices/v1/devices/pagelist?groupId=-1&limit=100&offset=0&filter=TIME_PLAN,CONNECTION,SWITCH,STATUS,STATUS_EXT,WIFI,NODISTURB,P2P,KMS,HIDDNS"
-        ) as res:
-            res_json = await res.json()
-        log.debug("Got device list response '%s'", res_json)
-        log.info("Received device list")
-        for device in res_json["deviceInfos"]:
-            serial = device["deviceSerial"]
-            try:
-                locks_json = json.loads(res_json["statusInfos"][serial]["optionals"]["lockNum"])
-                # "lockNum" format: {"1":1,"2":1,"3":1,"4":1,"5":1,"6":1,"7":1,"8":1}
-                # which means (guessing): <channel number>: <number of locks connected>
-                locks = {int(k): v for k, v in locks_json.items()}
-            except KeyError:
-                # some devices doesn't have "lockNum"
-                # (for example https://www.hikvision.com/cz/products/IP-Products/Network-Video-Recorders/Pro-Series/ds-7608ni-k2-8p/)
-                locks = {}
-            yield {
-                "id": device["fullSerial"],
-                "name": device["name"],
-                "serial": serial,
-                "type": device["deviceType"],
-                "version": device["version"],
-                "locks": locks,
-            }
-        if res_json["page"]["hasNext"]:
-            raise ValueError("More than 100 devices is not supported yet. Please file an issue on GitHub.")
+        limit, offset, has_next_page = 50, 0, True
+        while has_next_page:
+            async with self.client.get(
+                f"{self.BASE_URL}/v3/userdevices/v1/devices/pagelist?groupId=-1&limit={limit}&offset={offset}&filter=TIME_PLAN,CONNECTION,SWITCH,STATUS,STATUS_EXT,WIFI,NODISTURB,P2P,KMS,HIDDNS"
+            ) as res:
+                res_json = await res.json()
+            log.debug("Got device list response '%s'", res_json)
+            log.info("Received device list")
+            for device in res_json["deviceInfos"]:
+                serial = device["deviceSerial"]
+                try:
+                    locks_json = json.loads(res_json["statusInfos"][serial]["optionals"]["lockNum"])
+                    # "lockNum" format: {"1":1,"2":1,"3":1,"4":1,"5":1,"6":1,"7":1,"8":1}
+                    # which means (guessing): <channel number>: <number of locks connected>
+                    locks = {int(k): v for k, v in locks_json.items()}
+                except KeyError:
+                    # some devices doesn't have "lockNum"
+                    # (for example https://www.hikvision.com/cz/products/IP-Products/Network-Video-Recorders/Pro-Series/ds-7608ni-k2-8p/)
+                    locks = {}
+                yield {
+                    "id": device["fullSerial"],
+                    "name": device["name"],
+                    "serial": serial,
+                    "type": device["deviceType"],
+                    "version": device["version"],
+                    "locks": locks,
+                }
+            offset += limit
+            has_next_page = res_json["page"]["hasNext"]
 
     async def get_cameras(self, device_serial: str):
         """Get info about cameras connected to a device."""
