@@ -71,6 +71,13 @@ class HikConnect:
             )
             # GET v3/captcha?account=tomasbedrich&featureCode=deadbeef => receives PNG with CATPCHA, the code must be send with next request inside `imageCode` field
 
+        if res_json["meta"]["code"] == 1100:
+            # https://github.com/tomasbedrich/home-assistant-hikconnect/issues/16
+            new_api_domain = res_json["loginArea"]["apiDomain"]
+            self.BASE_URL = f"https://{new_api_domain}"
+            log.debug("Switching API domain to '%s'", self.BASE_URL)
+            return self.login(username, password)
+
         try:
             session_id = res_json["loginSession"]["sessionId"]
         except KeyError as e:
