@@ -76,7 +76,7 @@ class HikConnect:
             new_api_domain = res_json["loginArea"]["apiDomain"]
             self.BASE_URL = f"https://{new_api_domain}"
             log.debug("Switching API domain to '%s'", self.BASE_URL)
-            return self.login(username, password)
+            return await self.login(username, password)
 
         try:
             session_id = res_json["loginSession"]["sessionId"]
