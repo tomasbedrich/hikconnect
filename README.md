@@ -17,7 +17,6 @@ async with HikConnect() as api:
     #   'version': 'V1.2.3 build 123456',
     #   'locks': {1: 2, 2: 0, 3: 1}
     # }]
-    
     # locks data means (guessing): <channel number>: <number of locks connected>
 
     my_device_serial = devices[0]["serial"]
@@ -32,7 +31,19 @@ async with HikConnect() as api:
 
     call_status = await api.get_call_status(my_device_serial)
     print(call_status)
-    # {"apiId":1,"callStatus":1,"verFlag":1,"callerInfo":{"buildingNo":0,"floorNo":0,"zoneNo":0,"unitNo":0,"devNo":0,"devType":0,"lockNum":0},"rc":1}
+    # {
+    #   'status': 'idle',
+    #   'info': {
+    #     'building_number': 0,
+    #     'floor_number': 0,
+    #     'zone_number': 0,
+    #     'unit_number': 0,
+    #     'device_number': 0,
+    #     'device_type': 0,
+    #     'lock_number': 0
+    #   }
+    # }
+    # can be "idle" / "ringing" / "call in progress" - see hikconnect/api.py:45
     
     await api.unlock(my_device_serial, 1)
 

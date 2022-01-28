@@ -42,6 +42,21 @@ class _HikConnectClient(ClientSession):
 class HikConnect:
     BASE_URL = "https://api.hik-connect.com"
 
+    CALL_STATUS_MAPPING = {
+        1: "idle",
+        2: "ringing",
+        3: "call in progress",
+    }
+    CALL_INFO_MAPPING = {
+        "buildingNo": "building_number",
+        "floorNo": "floor_number",
+        "zoneNo": "zone_number",
+        "unitNo": "unit_number",
+        "devNo": "device_number",
+        "devType": "device_type",
+        "lockNum": "lock_number",
+    }
+
     def __init__(self):
         self._refresh_session_id = None
         self.login_valid_until = None
@@ -212,10 +227,26 @@ class HikConnect:
             res_json = await res.json()
         log.debug("Got call status response '%s'", res_json)
         log.info("Got call status for device '%s'", device_serial)
-        # TODO parse
-        # At rest looks like this:
-        # {"apiId":1,"callStatus":1,"verFlag":1,"callerInfo":{"buildingNo":0,"floorNo":0,"zoneNo":0,"unitNo":0,"devNo":0,"devType":0,"lockNum":0},"rc":1}
-        return res_json["data"]
+        data = json.loads(res_json["data"])
+        try:
+            status = self.CALL_STATUS_MAPPING[data["callStatus"]]
+        except KeyError:
+            log.warning("Unknown call status: %s", data["callStatus"])
+            status = "unknown"
+
+        info = {}
+        for in_key, out_key in self.CALL_INFO_MAPPING.items():
+            try:
+                info[out_key] = data["callerInfo"][in_key]
+            except KeyError:
+                # normally we would log warning, but it seems to be pretty common situation:
+                # https://github.com/tomasbedrich/home-assistant-hikconnect/issues/4#issuecomment-1022526060
+                log.debug("Missing caller info key: %s", in_key)
+
+        return {
+            "status": status,
+            "info": info,
+        }
 
     @staticmethod
     def _decode_jwt_expiration(jwt):
