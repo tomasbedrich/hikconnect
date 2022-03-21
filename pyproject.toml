@@ -64,11 +64,6 @@ mkdocs-material = "*"
 mkdocstrings = "*"
 pygments = "^2.5.2"
 
-# Tooling
-sniffer = "*"
-MacFSEvents = { version = "*", platform = "darwin" }
-pync = { version = "*", platform = "darwin" }
-
 [tool.black]
 
 target-version = ["py36", "py37", "py38"]
