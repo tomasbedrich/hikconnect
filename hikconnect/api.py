@@ -7,7 +7,7 @@ from contextlib import contextmanager
 
 from aiohttp import ClientSession
 
-from hikconnect.exceptions import LoginError, DeviceOffline
+from hikconnect.exceptions import DeviceOffline, LoginError
 
 log = logging.getLogger(__name__)
 
@@ -142,6 +142,8 @@ class HikConnect:
         log.debug("Parsed refresh_session_id '%s'", self._refresh_session_id)
 
     def is_refresh_login_needed(self):
+        if not self.login_valid_until:
+            return True
         return (self.login_valid_until - datetime.datetime.now()) < datetime.timedelta(
             hours=1
         )
