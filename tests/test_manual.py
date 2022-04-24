@@ -13,7 +13,7 @@ pytestmark = pytest.mark.asyncio
 async def test_main():
     username = os.getenv("HIKCONNECT_USERNAME")
     password = os.getenv("HIKCONNECT_PASSWORD")
-    channel_number = int(os.getenv("HIKCONNECT_CHANNEL_NUMBER", 1))
+    channel_number = int(os.getenv("HIKCONNECT_CHANNEL_NUMBER", "1"))
 
     async with HikConnect() as api:
         await api.login(username, password)

@@ -7,7 +7,7 @@ from contextlib import contextmanager
 
 from aiohttp import ClientSession
 
-from hikconnect.exceptions import LoginError
+from hikconnect.exceptions import DeviceOffline, LoginError
 
 log = logging.getLogger(__name__)
 
@@ -142,6 +142,8 @@ class HikConnect:
         log.debug("Parsed refresh_session_id '%s'", self._refresh_session_id)
 
     def is_refresh_login_needed(self):
+        if not self.login_valid_until:
+            return True
         return (self.login_valid_until - datetime.datetime.now()) < datetime.timedelta(
             hours=1
         )
@@ -227,6 +229,8 @@ class HikConnect:
             res_json = await res.json()
         log.debug("Got call status response '%s'", res_json)
         log.info("Got call status for device '%s'", device_serial)
+        if res_json["meta"]["code"] == 2003:
+            raise DeviceOffline()
         data = json.loads(res_json["data"])
         try:
             status = self.CALL_STATUS_MAPPING[data["callStatus"]]

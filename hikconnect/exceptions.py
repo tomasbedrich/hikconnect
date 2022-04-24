@@ -4,3 +4,7 @@ class HikConnectError(Exception):
 
 class LoginError(HikConnectError, ValueError):
     pass
+
+
+class DeviceOffline(HikConnectError):
+    pass
