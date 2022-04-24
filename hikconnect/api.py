@@ -7,7 +7,7 @@ from contextlib import contextmanager
 
 from aiohttp import ClientSession
 
-from hikconnect.exceptions import DeviceOffline, LoginError
+from hikconnect.exceptions import DeviceOffline, LoginError, DeviceNetworkError
 
 log = logging.getLogger(__name__)
 
@@ -231,6 +231,8 @@ class HikConnect:
         log.info("Got call status for device '%s'", device_serial)
         if res_json["meta"]["code"] == 2003:
             raise DeviceOffline()
+        if res_json["meta"]["code"] == 2009:
+            raise DeviceNetworkError()
         data = json.loads(res_json["data"])
         try:
             status = self.CALL_STATUS_MAPPING[data["callStatus"]]
