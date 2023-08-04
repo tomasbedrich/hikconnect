@@ -252,6 +252,22 @@ class HikConnect:
             "info": info,
         }
 
+    async def hangup(self, device_serial: str):
+        """
+        Send hangup request.
+
+        The `device_serial` parameter can be obtained from `get_devices()` and/or `get_cameras()`.
+        """
+        async with self.client.put(
+                f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/operation?cmdId=3&handler={self.client.FEATURE_CODE}"
+        ) as res:
+            res_json = await res.json()
+        log.debug("Got hangup response '%s'", res_json)
+        log.info(
+            "Hangup device '%s'",
+            device_serial
+        )
+
     @staticmethod
     def _decode_jwt_expiration(jwt):
         # decode JWT manually because of PyJWT version incompatibility with HomeAssistant
