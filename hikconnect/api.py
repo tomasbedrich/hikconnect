@@ -252,19 +252,19 @@ class HikConnect:
             "info": info,
         }
 
-    async def hangup(self, device_serial: str):
+    async def cancel_call(self, device_serial: str):
         """
-        Send hangup request.
+        Send cancel call request.
 
         The `device_serial` parameter can be obtained from `get_devices()` and/or `get_cameras()`.
         """
         async with self.client.put(
-                f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/operation?cmdId=3&handler={self.client.FEATURE_CODE}"
+                f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/operation?cmdId=3"
         ) as res:
             res_json = await res.json()
-        log.debug("Got hangup response '%s'", res_json)
+        log.debug("Got cancel_call response '%s'", res_json)
         log.info(
-            "Hangup device '%s'",
+            "Cancel call to device '%s'",
             device_serial
         )
 

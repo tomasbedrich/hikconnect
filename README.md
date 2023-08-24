@@ -45,7 +45,11 @@ async with HikConnect() as api:
     # }
     # can be "idle" / "ringing" / "call in progress" - see hikconnect/api.py:45
     
+    # Unlock device
     await api.unlock(my_device_serial, 1)
+    
+    # Cancel call for device
+    await api.cancel_call(my_device_serial, 1)
 
     # call this periodically at least once per 30 mins!
     if api.is_refresh_login_needed():

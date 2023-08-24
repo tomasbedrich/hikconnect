@@ -29,12 +29,12 @@ async def test_main():
         await api.refresh_login()
 
         # BEWARE: actually unlocks door!
-        print(f"api.unlock({devices[0]['serial']=}, {channel_number=})")
+        # print(f"api.unlock({devices[0]['serial']=}, {channel_number=})")
         # await api.unlock(devices[0]["serial"], channel_number)
 
         # BEWARE: will actually hangup an active call!
-        print(f"api.hangup({devices[0]['serial']=})")
-        await api.hangup(devices[0]["serial"])
+        # print(f"api.hangup({devices[0]['serial']=})")
+        # await api.cancel_call(devices[0]["serial"])
 
 
 if __name__ == "__main__":
