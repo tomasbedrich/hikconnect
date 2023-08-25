@@ -49,7 +49,7 @@ async with HikConnect() as api:
     await api.unlock(my_device_serial, 1)
     
     # Cancel call for device
-    await api.cancel_call(my_device_serial, 1)
+    await api.cancel_call(my_device_serial)
 
     # call this periodically at least once per 30 mins!
     if api.is_refresh_login_needed():
