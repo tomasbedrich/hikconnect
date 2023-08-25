@@ -252,6 +252,22 @@ class HikConnect:
             "info": info,
         }
 
+    async def cancel_call(self, device_serial: str):
+        """
+        Send cancel call request.
+
+        The `device_serial` parameter can be obtained from `get_devices()` and/or `get_cameras()`.
+        """
+        async with self.client.put(
+                f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/operation?cmdId=3"
+        ) as res:
+            res_json = await res.json()
+        log.debug("Got cancel_call response '%s'", res_json)
+        log.info(
+            "Cancel call to device '%s'",
+            device_serial
+        )
+
     @staticmethod
     def _decode_jwt_expiration(jwt):
         # decode JWT manually because of PyJWT version incompatibility with HomeAssistant

@@ -32,6 +32,10 @@ async def test_main():
         print(f"api.unlock({devices[0]['serial']=}, {channel_number=})")
         # await api.unlock(devices[0]["serial"], channel_number)
 
+        # BEWARE: cancels an active call!
+        print(f"api.cancel_call({devices[0]['serial']=})")
+        # await api.cancel_call(devices[0]["serial"])
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
