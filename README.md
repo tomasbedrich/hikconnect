@@ -55,3 +55,16 @@ async with HikConnect() as api:
     if api.is_refresh_login_needed():
         await api.refresh_login()
 ```
+
+If you are new to `async` Python, you simply need to wrap your code in a construction like this:
+
+```python
+import asyncio
+
+async def main():
+    # put the original code containing `async` keywords here
+
+asyncio.run(main())
+```
+
+More info [in the `async` docs](https://docs.python.org/3/library/asyncio.html).
