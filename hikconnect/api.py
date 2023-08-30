@@ -95,11 +95,11 @@ class HikConnect:
 
         try:
             session_id = res_json["loginSession"]["sessionId"]
-        except KeyError as e:
+        except KeyError as e:  # pragma: no cover
             raise LoginError("Unable to parse session_id from response.") from e
         try:
             refresh_session_id = res_json["loginSession"]["rfSessionId"]
-        except KeyError as e:
+        except KeyError as e:  # pragma: no cover
             raise LoginError("Unable to parse refresh_session_id from response.") from e
 
         self._handle_login_response(session_id, refresh_session_id)
@@ -121,11 +121,11 @@ class HikConnect:
 
         try:
             session_id = res_json["sessionInfo"]["sessionId"]
-        except KeyError as e:
+        except KeyError as e:  # pragma: no cover
             raise LoginError("Unable to parse session_id from response.") from e
         try:
             refresh_session_id = res_json["sessionInfo"]["refreshSessionId"]
-        except KeyError as e:
+        except KeyError as e:  # pragma: no cover
             raise LoginError("Unable to parse refresh_session_id from response.") from e
 
         self._handle_login_response(session_id, refresh_session_id)
