@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 from hikconnect.api import HikConnect
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.manual]
 
 
 async def test_main():

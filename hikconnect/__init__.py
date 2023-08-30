@@ -1,6 +1,3 @@
-from pkg_resources import DistributionNotFound, get_distribution
+import importlib
 
-try:
-    __version__ = get_distribution("hikconnect").version
-except DistributionNotFound:
-    __version__ = "(local)"
+__version__ = importlib.metadata.version("hikconnect")
