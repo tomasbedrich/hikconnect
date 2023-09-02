@@ -306,3 +306,141 @@ async def test_get_devices(api, get_devices_response):
         assert devices[0]["name"] == "device with locks"
         assert devices[0]["type"] == "DS-KH6210-L"
         assert devices[0]["locks"] == {1: 1, 2: 1, 3: 2, 4: 0, 5: 1, 6: 1, 7: 1, 8: 1}
+
+
+@pytest.fixture
+def get_cameras_response():
+    return {
+        "cameraInfos": [
+            {
+                "cameraId": "4203fd7c5f89ce96f8ff0adfdbe8b731",
+                "cameraName": "foo",
+                "channelNo": 1,
+                "cameraCover": "https://ieu.ezvizlife.com/assets/imgs/public/homeDevice.jpeg",
+                "deviceSerial": "D12345678",
+                "isShow": 1,
+                "videoLevel": 2,
+                "videoQualityInfos": [
+                    {"streamType": 2, "videoLevel": 0},
+                    {"streamType": 1, "videoLevel": 2},
+                ],
+                "streamBizUrl": "biz=1",
+                "vtmInfo": {
+                    "domain": "vtmcdsfra.ezvizlife.com",
+                    "externalIp": "148.148.148.148",
+                    "internalIp": None,
+                    "port": 8554,
+                    "forceStreamType": 0,
+                    "isBackup": 0,
+                },
+                "deviceChannelInfo": {
+                    "channelDeviceSerial": "D12345678",
+                    "channelNo": 1,
+                    "privacyStatus": 0,
+                    "powerStatus": 0,
+                    "globalStatus": 0,
+                    "signalStatus": 1,
+                },
+                "cameraShareInfo": None,
+                "extPermission": None,
+            },
+            {
+                "cameraId": "cd72bc923956952194468738123b7a5e",
+                "cameraName": "bar",
+                "channelNo": 2,
+                "cameraCover": "https://ieu.ezvizlife.com/assets/imgs/public/homeDevice.jpeg",
+                "deviceSerial": "D12345678",
+                "isShow": 0,
+                "videoLevel": 2,
+                "videoQualityInfos": [
+                    {"streamType": 2, "videoLevel": 0},
+                    {"streamType": 1, "videoLevel": 2},
+                ],
+                "streamBizUrl": "biz=1",
+                "vtmInfo": {
+                    "domain": "vtmcdsfra.ezvizlife.com",
+                    "externalIp": "148.148.148.148",
+                    "internalIp": None,
+                    "port": 8554,
+                    "forceStreamType": 0,
+                    "isBackup": 0,
+                },
+                "deviceChannelInfo": {
+                    "channelDeviceSerial": "D12345678",
+                    "channelNo": 2,
+                    "privacyStatus": 0,
+                    "powerStatus": 0,
+                    "globalStatus": 0,
+                    "signalStatus": 1,
+                },
+                "cameraShareInfo": None,
+                "extPermission": None,
+            },
+            {
+                "cameraId": "d2a2057d853438d9a5b4954baec136e3",
+                "cameraName": "baz",
+                "channelNo": 3,
+                "cameraCover": "https://ieu.ezvizlife.com/assets/imgs/public/homeDevice.jpeg",
+                "deviceSerial": "D12345678",
+                "isShow": 1,
+                "videoLevel": 2,
+                "videoQualityInfos": [
+                    {"streamType": 2, "videoLevel": 0},
+                    {"streamType": 1, "videoLevel": 2},
+                ],
+                "streamBizUrl": "biz=1",
+                "vtmInfo": {
+                    "domain": "vtmcdsfra.ezvizlife.com",
+                    "externalIp": "148.148.148.148",
+                    "internalIp": None,
+                    "port": 8554,
+                    "forceStreamType": 0,
+                    "isBackup": 0,
+                },
+                "deviceChannelInfo": {
+                    "channelDeviceSerial": "D12345678",
+                    "channelNo": 3,
+                    "privacyStatus": 0,
+                    "powerStatus": 0,
+                    "globalStatus": 0,
+                    "signalStatus": 0,
+                },
+                "cameraShareInfo": None,
+                "extPermission": None,
+            },
+        ],
+        "meta": {"code": 200, "message": "操作成功", "moreInfo": None},
+    }
+
+
+async def test_get_cameras(api, get_cameras_response):
+    with aioresponses() as mock:
+        mock.get(
+            "https://api.hik-connect.com/v3/userdevices/v1/cameras/info?deviceSerial=D12345678",
+            payload=get_cameras_response,
+        )
+        cameras = [camera async for camera in api.get_cameras("D12345678")]
+        assert len(cameras) == 3
+        assert cameras == [
+            {
+                "id": "4203fd7c5f89ce96f8ff0adfdbe8b731",
+                "name": "foo",
+                "channel_number": 1,
+                "signal_status": 1,
+                "is_shown": 1,
+            },
+            {
+                "id": "cd72bc923956952194468738123b7a5e",
+                "name": "bar",
+                "channel_number": 2,
+                "signal_status": 1,
+                "is_shown": 0,
+            },
+            {
+                "id": "d2a2057d853438d9a5b4954baec136e3",
+                "name": "baz",
+                "channel_number": 3,
+                "signal_status": 0,
+                "is_shown": 1,
+            },
+        ]
