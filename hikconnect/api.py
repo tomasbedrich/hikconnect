@@ -252,6 +252,19 @@ class HikConnect:
             "info": info,
         }
 
+    async def answer_call(self, device_serial: str):
+        """
+        Send answer call request.
+
+        The `device_serial` parameter can be obtained from `get_devices()` and/or `get_cameras()`.
+        """
+        async with self.client.put(
+            f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/operation?cmdId=2"
+        ) as res:
+            res_json = await res.json()
+        log.debug("Got answer_call response '%s'", res_json)
+        log.info("Answer call to device '%s'", device_serial)
+
     async def cancel_call(self, device_serial: str):
         """
         Send cancel call request.
@@ -264,6 +277,19 @@ class HikConnect:
             res_json = await res.json()
         log.debug("Got cancel_call response '%s'", res_json)
         log.info("Cancel call to device '%s'", device_serial)
+
+    async def hangup_call(self, device_serial: str):
+        """
+        Send hangup call request.
+
+        The `device_serial` parameter can be obtained from `get_devices()` and/or `get_cameras()`.
+        """
+        async with self.client.put(
+            f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/operation?cmdId=5"
+        ) as res:
+            res_json = await res.json()
+        log.debug("Got hangup_call response '%s'", res_json)
+        log.info("Hangup call to device '%s'", device_serial)
 
     @staticmethod
     def _decode_jwt_expiration(jwt):
