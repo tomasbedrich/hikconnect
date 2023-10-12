@@ -32,9 +32,17 @@ async def test_main():
         print(f"api.unlock({devices[0]['serial']=}, {channel_number=})")
         # await api.unlock(devices[0]["serial"], channel_number)
 
+        # BEWARE: answers an active call!
+        print(f"api.answer_call({devices[0]['serial']=})")
+        # await api.answer_call(devices[0]["serial"])
+
         # BEWARE: cancels an active call!
         print(f"api.cancel_call({devices[0]['serial']=})")
         # await api.cancel_call(devices[0]["serial"])
+
+        # BEWARE: hangs up an active call!
+        print(f"api.hangup_call({devices[0]['serial']=})")
+        # await api.hangup_call(devices[0]["serial"])
 
 
 if __name__ == "__main__":
