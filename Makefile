@@ -17,7 +17,7 @@ VIRTUAL_ENV ?= .venv
 all: install
 
 .PHONY: ci
-ci: format check test mkdocs ## Run all tasks that determine CI status
+ci: format check test ## Run all tasks that determine CI status
 
 # SYSTEM DEPENDENCIES #########################################################
 
@@ -102,32 +102,6 @@ test-all: install
 read-coverage:
 	bin/open htmlcov/index.html
 
-# DOCUMENTATION ###############################################################
-
-MKDOCS_INDEX := site/index.html
-
-.PHONY: docs
-docs: mkdocs ## Generate documentation
-
-.PHONY: mkdocs
-mkdocs: install $(MKDOCS_INDEX)
-$(MKDOCS_INDEX): docs/requirements.txt mkdocs.yml docs/*.md
-	@ mkdir -p docs/about
-	@ cd docs && ln -sf ../README.md index.md
-	@ cd docs/about && ln -sf ../../CHANGELOG.md changelog.md
-	@ cd docs/about && ln -sf ../../CONTRIBUTING.md contributing.md
-	@ cd docs/about && ln -sf ../../LICENSE.md license.md
-	poetry run mkdocs build --clean --strict
-
-docs/requirements.txt: poetry.lock
-	@ poetry run pip list --format=freeze | grep mkdocs > $@
-	@ poetry run pip list --format=freeze | grep Pygments >> $@
-
-.PHONY: mkdocs-serve
-mkdocs-serve: mkdocs
-	eval "sleep 3; bin/open http://127.0.0.1:8000" &
-	poetry run mkdocs serve
-
 # BUILD #######################################################################
 
 DIST_FILES := dist/*.tar.gz dist/*.whl
@@ -149,7 +123,7 @@ upload: dist ## Upload the current version to PyPI
 # CLEANUP #####################################################################
 
 .PHONY: clean
-clean: .clean-build .clean-docs .clean-test .clean-install ## Delete all generated and temporary files
+clean: .clean-build .clean-test .clean-install ## Delete all generated and temporary files
 
 .PHONY: clean-all
 clean-all: clean
@@ -163,10 +137,6 @@ clean-all: clean
 .PHONY: .clean-test
 .clean-test:
 	rm -rf .cache .pytest .coverage htmlcov
-
-.PHONY: .clean-docs
-.clean-docs:
-	rm -rf docs/*.png site
 
 .PHONY: .clean-build
 .clean-build:
