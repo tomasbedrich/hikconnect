@@ -444,3 +444,62 @@ async def test_get_cameras(api, get_cameras_response):
                 "is_shown": 1,
             },
         ]
+
+
+@pytest.fixture
+def get_call_status_legacy_response():
+    return {
+        "meta": {"code": 200, "message": "操作成功", "moreInfo": None},
+        "data": '{"callStatus":2,"callerInfo":{"buildingNo":1,"floorNo":2,"zoneNo":3,"unitNo":4,"devNo":5,"devType":6,"lockNum":7}}',
+    }
+
+
+@pytest.fixture
+def get_call_status_new_response():
+    return {
+        "meta": {"code": 200, "message": "操作成功", "moreInfo": None},
+        "data": {
+            "CallerInfo": {
+                "status": "talk",
+                "buildingNo": 11,
+                "floorNo": 22,
+            }
+        },
+    }
+
+
+async def test_get_call_status_legacy_payload(api, get_call_status_legacy_response):
+    with aioresponses() as mock:
+        mock.get(
+            "https://api.hik-connect.com/v3/devconfig/v1/call/D12345678/status",
+            payload=get_call_status_legacy_response,
+        )
+        call_status = await api.get_call_status("D12345678")
+        assert call_status == {
+            "status": "ringing",
+            "info": {
+                "building_number": 1,
+                "floor_number": 2,
+                "zone_number": 3,
+                "unit_number": 4,
+                "device_number": 5,
+                "device_type": 6,
+                "lock_number": 7,
+            },
+        }
+
+
+async def test_get_call_status_new_payload(api, get_call_status_new_response):
+    with aioresponses() as mock:
+        mock.get(
+            "https://api.hik-connect.com/v3/devconfig/v1/call/D12345678/status",
+            payload=get_call_status_new_response,
+        )
+        call_status = await api.get_call_status("D12345678")
+        assert call_status == {
+            "status": "call in progress",
+            "info": {
+                "building_number": 11,
+                "floor_number": 22,
+            },
+        }
