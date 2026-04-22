@@ -243,12 +243,17 @@ class HikConnect:
         if isinstance(data, str):
             data = json.loads(data)
         elif not isinstance(data, dict):
-            raise KeyError("Unsupported call status payload format")
+            raise KeyError(
+                "Unsupported call status payload format: expected str or dict, "
+                f"got {type(data).__name__}"
+            )
 
         caller_info = data.get("callerInfo")
         if caller_info is None:
             caller_info = data.get("CallerInfo")
         if caller_info is None:
+            caller_info = {}
+        if not isinstance(caller_info, dict):
             caller_info = {}
 
         status_raw = data.get("callStatus")
