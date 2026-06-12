@@ -1,4 +1,5 @@
 import pytest
+import pytest_asyncio
 from aioresponses import aioresponses
 
 from hikconnect.api import HikConnect, LoginError
@@ -6,7 +7,7 @@ from hikconnect.api import HikConnect, LoginError
 pytestmark = pytest.mark.asyncio
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def api():
     api = HikConnect()
     yield api
@@ -211,7 +212,7 @@ def get_devices_response():
         "statusInfos": {
             "D12345678": {
                 "diskNum": 0,
-                "globalStatus": 0,
+                "globalStatus": 1,
                 "pirStatus": 0,
                 "isEncrypt": 0,
                 "upgradeAvailable": 0,
@@ -231,7 +232,9 @@ def get_devices_response():
                 },
             },
         },
-        "wifiInfos": {},
+        "wifiInfos": {
+            "D12345678": {"signal": 75, "address": "10.0.0.1"},
+        },
         "switchStatusInfos": {},
         "deviceInfos": [
             {
@@ -306,6 +309,17 @@ async def test_get_devices(api, get_devices_response):
         assert devices[0]["name"] == "device with locks"
         assert devices[0]["type"] == "DS-KH6210-L"
         assert devices[0]["locks"] == {1: 1, 2: 1, 3: 2, 4: 0, 5: 1, 6: 1, 7: 1, 8: 1}
+        assert devices[0]["local_ip"] == "10.0.0.1"
+        assert devices[0]["wan_ip"] == "81.81.81.81"
+        assert devices[0]["is_online"] is True
+        assert devices[0]["wifi_signal"] == 75
+        assert devices[0]["update_available"] is False
+        # device without connectionInfos/statusInfos/wifiInfos entry
+        assert devices[1]["local_ip"] is None
+        assert devices[1]["wan_ip"] is None
+        assert devices[1]["is_online"] is None
+        assert devices[1]["wifi_signal"] is None
+        assert devices[1]["update_available"] is None
 
 
 @pytest.fixture
