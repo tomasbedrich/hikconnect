@@ -29,44 +29,45 @@ classifiers = [
 
 [tool.poetry.dependencies]
 
-python = "^3.8"
-aiohttp = "^3.8.5"
+python = "^3.11"
+# aiohttp 3.14 is not yet supported by aioresponses (https://github.com/pnuckowski/aioresponses/issues/289)
+aiohttp = ">=3.13,<3.14"
 
-[tool.poetry.dev-dependencies]
+[tool.poetry.group.dev.dependencies]
 
 python-dotenv = "^1.0.0"
 
 # Formatters
-black = "^24.3.0"
-isort = "^5.12.0"
+black = "^25.1.0"
+isort = "^6.0.0"
 
 # Linters
-mypy = "^1.5.1"
+mypy = "^1.14.0"
 pydocstyle = "^6.3.0"
-pylint = "^2.17.5"
+pylint = "^3.3.5"
 
 # Testing
-pytest = "^7.4.0"
-pytest-cov = "^4.1.0"
-pytest-describe = "^2.1.0"
+pytest = "^8.3.0"
+pytest-cov = "^6.0.0"
+pytest-describe = "^2.2.0"
 pytest-expecter = "^3.0"
 pytest-random = "^0.02"
-pytest-asyncio = "^0.14.0"
+pytest-asyncio = "^0.24.0"
 pytest-dotenv = "^0.5.2"
-aioresponses = "^0.7.4"
+aioresponses = "^0.7.8"
 
 # Reports
-coveragespace = "^6.0.2"
+coveragespace = "^6.1.0"
 
 # Documentation
-mkdocs = "^1.5.2"
-mkdocs-material = "^9.2.5"
-mkdocstrings = "^0.22.0"
-pygments = "^2.16.1"
+mkdocs = "^1.6.0"
+mkdocs-material = "^9.5.0"
+mkdocstrings = "^0.27.0"
+pygments = "^2.18.0"
 
 [tool.black]
 
-target-version = ["py36", "py37", "py38"]
+target-version = ["py311"]
 
 [build-system]
 
