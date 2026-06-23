@@ -1,5 +1,4 @@
 import pytest
-import pytest_asyncio
 from aioresponses import aioresponses
 
 from hikconnect.api import HikConnect, LoginError
@@ -7,7 +6,7 @@ from hikconnect.api import HikConnect, LoginError
 pytestmark = pytest.mark.asyncio
 
 
-@pytest_asyncio.fixture
+@pytest.fixture
 async def api():
     api = HikConnect()
     yield api

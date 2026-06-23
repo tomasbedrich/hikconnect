@@ -158,60 +158,70 @@ class HikConnect:
                 res_json = await res.json()
             log.debug("Got device list response '%s'", res_json)
             log.info("Received device list")
-            connection_infos = res_json.get("connectionInfos") or {}
-            status_infos = res_json.get("statusInfos") or {}
-            wifi_infos = res_json.get("wifiInfos") or {}
             for device in res_json["deviceInfos"]:
-                serial = device["deviceSerial"]
-                try:
-                    locks_json = json.loads(
-                        res_json["statusInfos"][serial]["optionals"]["lockNum"]
-                    )
-                    # "lockNum" format: {"1":1,"2":1,"3":1,"4":1,"5":1,"6":1,"7":1,"8":1}
-                    # which means (guessing): <channel number>: <number of locks connected>
-                    locks = {int(k): v for k, v in locks_json.items()}
-                except KeyError:
-                    # some devices doesn't have "lockNum"
-                    # (for example https://www.hikvision.com/cz/products/IP-Products/Network-Video-Recorders/Pro-Series/ds-7608ni-k2-8p/)
-                    locks = {}
-                conn = connection_infos.get(serial) or {}
-                status = status_infos.get(serial) or {}
-                wifi = wifi_infos.get(serial) or {}
-                local_ip = conn.get("localIp")
-                if not isinstance(local_ip, str) or not local_ip or local_ip == "0.0.0.0":
-                    local_ip = wifi.get("address")
-                if not isinstance(local_ip, str) or local_ip == "0.0.0.0":
-                    local_ip = None
-                wan_ip = conn.get("netIp")
-                if not isinstance(wan_ip, str) or not wan_ip or wan_ip == "0.0.0.0":
-                    wan_ip = None
-                status_code = status.get("globalStatus")
-                is_online = (status_code == 1) if status_code is not None else None
-                wifi_signal = wifi.get("signal")
-                if not isinstance(wifi_signal, int):
-                    wifi_signal = None
-                upgrade_available = status.get("upgradeAvailable")
-                update_available = bool(upgrade_available) if upgrade_available is not None else None
-                # Cloud keeps stale IP/signal after device goes offline; clear them.
-                if not is_online:
-                    local_ip = None
-                    wan_ip = None
-                    wifi_signal = None
-                yield {
-                    "id": device["fullSerial"],
-                    "name": device["name"],
-                    "serial": serial,
-                    "type": device["deviceType"],
-                    "version": device["version"],
-                    "locks": locks,
-                    "local_ip": local_ip,
-                    "wan_ip": wan_ip,
-                    "is_online": is_online,
-                    "wifi_signal": wifi_signal,
-                    "update_available": update_available,
-                }
+                yield self._parse_device(device, res_json)
             offset += limit
             has_next_page = res_json["page"]["hasNext"]
+
+    @classmethod
+    def _parse_device(cls, device, res_json):
+        serial = device["deviceSerial"]
+        conn = (res_json.get("connectionInfos") or {}).get(serial) or {}
+        status = (res_json.get("statusInfos") or {}).get(serial) or {}
+        wifi = (res_json.get("wifiInfos") or {}).get(serial) or {}
+
+        is_online = cls._parse_is_online(status)
+        local_ip = cls._clean_ip(conn.get("localIp")) or cls._clean_ip(
+            wifi.get("address")
+        )
+        wan_ip = cls._clean_ip(conn.get("netIp"))
+        wifi_signal = (
+            wifi.get("signal") if isinstance(wifi.get("signal"), int) else None
+        )
+
+        # Cloud keeps stale IP/signal after device goes offline; clear them.
+        if not is_online:
+            local_ip = wan_ip = wifi_signal = None
+
+        return {
+            "id": device["fullSerial"],
+            "name": device["name"],
+            "serial": serial,
+            "type": device["deviceType"],
+            "version": device["version"],
+            "locks": cls._parse_locks(status),
+            "local_ip": local_ip,
+            "wan_ip": wan_ip,
+            "is_online": is_online,
+            "wifi_signal": wifi_signal,
+            "update_available": cls._parse_update_available(status),
+        }
+
+    @staticmethod
+    def _clean_ip(value):
+        if not isinstance(value, str) or not value or value == "0.0.0.0":
+            return None
+        return value
+
+    @staticmethod
+    def _parse_is_online(status):
+        code = status.get("globalStatus")
+        return (code == 1) if code is not None else None
+
+    @staticmethod
+    def _parse_update_available(status):
+        value = status.get("upgradeAvailable")
+        return bool(value) if value is not None else None
+
+    @staticmethod
+    def _parse_locks(status):
+        # "lockNum" format: {"1":1,"2":1,...} meaning <channel number>: <number of locks connected>
+        # Some devices don't have "lockNum" (e.g. NVRs like DS-7608NI-K2-8P).
+        try:
+            locks_json = json.loads(status["optionals"]["lockNum"])
+        except KeyError:
+            return {}
+        return {int(k): v for k, v in locks_json.items()}
 
     async def get_cameras(self, device_serial: str):
         """Get info about cameras connected to a device."""
