@@ -158,6 +158,9 @@ class HikConnect:
                 res_json = await res.json()
             log.debug("Got device list response '%s'", res_json)
             log.info("Received device list")
+            connection_infos = res_json.get("connectionInfos") or {}
+            status_infos = res_json.get("statusInfos") or {}
+            wifi_infos = res_json.get("wifiInfos") or {}
             for device in res_json["deviceInfos"]:
                 serial = device["deviceSerial"]
                 try:
@@ -171,6 +174,29 @@ class HikConnect:
                     # some devices doesn't have "lockNum"
                     # (for example https://www.hikvision.com/cz/products/IP-Products/Network-Video-Recorders/Pro-Series/ds-7608ni-k2-8p/)
                     locks = {}
+                conn = connection_infos.get(serial) or {}
+                status = status_infos.get(serial) or {}
+                wifi = wifi_infos.get(serial) or {}
+                local_ip = conn.get("localIp")
+                if not isinstance(local_ip, str) or not local_ip or local_ip == "0.0.0.0":
+                    local_ip = wifi.get("address")
+                if not isinstance(local_ip, str) or local_ip == "0.0.0.0":
+                    local_ip = None
+                wan_ip = conn.get("netIp")
+                if not isinstance(wan_ip, str) or not wan_ip or wan_ip == "0.0.0.0":
+                    wan_ip = None
+                status_code = status.get("globalStatus")
+                is_online = (status_code == 1) if status_code is not None else None
+                wifi_signal = wifi.get("signal")
+                if not isinstance(wifi_signal, int):
+                    wifi_signal = None
+                upgrade_available = status.get("upgradeAvailable")
+                update_available = bool(upgrade_available) if upgrade_available is not None else None
+                # Cloud keeps stale IP/signal after device goes offline; clear them.
+                if not is_online:
+                    local_ip = None
+                    wan_ip = None
+                    wifi_signal = None
                 yield {
                     "id": device["fullSerial"],
                     "name": device["name"],
@@ -178,6 +204,11 @@ class HikConnect:
                     "type": device["deviceType"],
                     "version": device["version"],
                     "locks": locks,
+                    "local_ip": local_ip,
+                    "wan_ip": wan_ip,
+                    "is_online": is_online,
+                    "wifi_signal": wifi_signal,
+                    "update_available": update_available,
                 }
             offset += limit
             has_next_page = res_json["page"]["hasNext"]

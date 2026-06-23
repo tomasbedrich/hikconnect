@@ -1,4 +1,5 @@
 import pytest
+import pytest_asyncio
 from aioresponses import aioresponses
 
 from hikconnect.api import HikConnect, LoginError
@@ -6,7 +7,7 @@ from hikconnect.api import HikConnect, LoginError
 pytestmark = pytest.mark.asyncio
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def api():
     api = HikConnect()
     yield api
@@ -211,7 +212,7 @@ def get_devices_response():
         "statusInfos": {
             "D12345678": {
                 "diskNum": 0,
-                "globalStatus": 0,
+                "globalStatus": 1,
                 "pirStatus": 0,
                 "isEncrypt": 0,
                 "upgradeAvailable": 0,
@@ -231,7 +232,9 @@ def get_devices_response():
                 },
             },
         },
-        "wifiInfos": {},
+        "wifiInfos": {
+            "D12345678": {"signal": 75, "address": "10.0.0.1"},
+        },
         "switchStatusInfos": {},
         "deviceInfos": [
             {
@@ -306,6 +309,117 @@ async def test_get_devices(api, get_devices_response):
         assert devices[0]["name"] == "device with locks"
         assert devices[0]["type"] == "DS-KH6210-L"
         assert devices[0]["locks"] == {1: 1, 2: 1, 3: 2, 4: 0, 5: 1, 6: 1, 7: 1, 8: 1}
+        assert devices[0]["local_ip"] == "10.0.0.1"
+        assert devices[0]["wan_ip"] == "81.81.81.81"
+        assert devices[0]["is_online"] is True
+        assert devices[0]["wifi_signal"] == 75
+        assert devices[0]["update_available"] is False
+        # device without connectionInfos/statusInfos/wifiInfos entry
+        assert devices[1]["local_ip"] is None
+        assert devices[1]["wan_ip"] is None
+        assert devices[1]["is_online"] is None
+        assert devices[1]["wifi_signal"] is None
+        assert devices[1]["update_available"] is None
+
+
+def _base_device(serial, name):
+    return {
+        "name": name,
+        "deviceSerial": serial,
+        "fullSerial": f"DS-KH6210-L{serial}",
+        "deviceType": "DS-KH6210-L",
+        "version": "V1.5.1 build 190613",
+    }
+
+
+def _base_response(devices, connection_infos=None, status_infos=None, wifi_infos=None):
+    return {
+        "deviceInfos": devices,
+        "connectionInfos": connection_infos or {},
+        "statusInfos": status_infos or {},
+        "wifiInfos": wifi_infos or {},
+        "page": {"hasNext": False},
+        "meta": {"code": 200},
+    }
+
+
+URL = "https://api.hik-connect.com/v3/userdevices/v1/devices/pagelist?groupId=-1&limit=50&offset=0&filter=TIME_PLAN,CONNECTION,SWITCH,STATUS,STATUS_EXT,WIFI,NODISTURB,P2P,KMS,HIDDNS"
+
+
+async def test_get_devices_offline_wipes_ip_and_signal(api):
+    """IP and WiFi signal must be None when device is offline (globalStatus != 1)."""
+    payload = _base_response(
+        devices=[_base_device("D11111111", "offline device")],
+        connection_infos={"D11111111": {"localIp": "10.0.0.5", "netIp": "1.2.3.4"}},
+        status_infos={"D11111111": {"globalStatus": 0, "upgradeAvailable": 0}},
+        wifi_infos={"D11111111": {"signal": 80, "address": "10.0.0.5"}},
+    )
+    with aioresponses() as mock:
+        mock.get(URL, payload=payload)
+        devices = [d async for d in api.get_devices()]
+    assert devices[0]["is_online"] is False
+    assert devices[0]["local_ip"] is None
+    assert devices[0]["wan_ip"] is None
+    assert devices[0]["wifi_signal"] is None
+    assert devices[0]["update_available"] is False
+
+
+async def test_get_devices_local_ip_fallback_to_wifi_address(api):
+    """local_ip falls back to wifiInfos.address when localIp is 0.0.0.0."""
+    payload = _base_response(
+        devices=[_base_device("D22222222", "wifi device")],
+        connection_infos={"D22222222": {"localIp": "0.0.0.0", "netIp": "5.5.5.5"}},
+        status_infos={"D22222222": {"globalStatus": 1, "upgradeAvailable": 0}},
+        wifi_infos={"D22222222": {"signal": 60, "address": "192.168.1.50"}},
+    )
+    with aioresponses() as mock:
+        mock.get(URL, payload=payload)
+        devices = [d async for d in api.get_devices()]
+    assert devices[0]["local_ip"] == "192.168.1.50"
+
+
+async def test_get_devices_update_available_true(api):
+    """update_available is True when upgradeAvailable is 1."""
+    payload = _base_response(
+        devices=[_base_device("D33333333", "device needing update")],
+        status_infos={"D33333333": {"globalStatus": 1, "upgradeAvailable": 1}},
+    )
+    with aioresponses() as mock:
+        mock.get(URL, payload=payload)
+        devices = [d async for d in api.get_devices()]
+    assert devices[0]["update_available"] is True
+
+
+async def test_get_devices_missing_info_dicts(api):
+    """All new fields are None when connectionInfos/statusInfos/wifiInfos are absent."""
+    payload = {
+        "deviceInfos": [_base_device("D44444444", "bare device")],
+        "page": {"hasNext": False},
+        "meta": {"code": 200},
+    }
+    with aioresponses() as mock:
+        mock.get(URL, payload=payload)
+        devices = [d async for d in api.get_devices()]
+    assert devices[0]["local_ip"] is None
+    assert devices[0]["wan_ip"] is None
+    assert devices[0]["is_online"] is None
+    assert devices[0]["wifi_signal"] is None
+    assert devices[0]["update_available"] is None
+
+
+async def test_get_devices_pagination(api):
+    """Devices spanning two pages are all returned."""
+    url_page2 = "https://api.hik-connect.com/v3/userdevices/v1/devices/pagelist?groupId=-1&limit=50&offset=50&filter=TIME_PLAN,CONNECTION,SWITCH,STATUS,STATUS_EXT,WIFI,NODISTURB,P2P,KMS,HIDDNS"
+    page1 = _base_response(devices=[_base_device("D55555555", "page1 device")])
+    page1["page"] = {"hasNext": True}
+    page2 = _base_response(devices=[_base_device("D66666666", "page2 device")])
+    with aioresponses() as mock:
+        mock.get(URL, payload=page1)
+        mock.get(url_page2, payload=page2)
+        devices = [d async for d in api.get_devices()]
+    assert len(devices) == 2
+    assert devices[0]["serial"] == "D55555555"
+    assert devices[1]["serial"] == "D66666666"
 
 
 @pytest.fixture
