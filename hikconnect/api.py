@@ -318,9 +318,7 @@ class HikConnect:
         ) as res:
             res_json = await res.json()
         log.debug("Got create area response '%s'", res_json)
-        log.info(
-            "Created area '%s' on device '%s'", group_name, device_serial
-        )
+        log.info("Created area '%s' on device '%s'", group_name, device_serial)
         if "groupInfo" not in res_json:
             raise ValueError(f"API error creating area: {res_json}")
         info = res_json["groupInfo"]
@@ -476,16 +474,14 @@ class HikConnect:
         ) as res:
             res_json = await res.json()
         log.debug("Got delete area response '%s'", res_json)
-        
+
         meta = res_json.get("meta", {})
         if meta.get("code") != 200:
             raise ValueError(f"API error deleting area: {res_json}")
-            
+
         log.info("Deleted area '%d' on device '%s'", group_id, device_serial)
 
-    async def set_area_defence_mode(
-        self, device_serial: str, group_id: int, mode: int
-    ):
+    async def set_area_defence_mode(self, device_serial: str, group_id: int, mode: int):
         """Set the defence (arm/disarm) mode for an area.
 
         Args:

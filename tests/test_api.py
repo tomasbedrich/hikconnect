@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 from aioresponses import aioresponses
 
@@ -628,9 +630,7 @@ class TestAreas:
     # get_areas                                                            #
     # ------------------------------------------------------------------ #
 
-    async def test_get_areas_yields_correct_shapes(
-        self, api, list_areas_response
-    ):
+    async def test_get_areas_yields_correct_shapes(self, api, list_areas_response):
         with aioresponses() as mock:
             mock.get(
                 f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/list",
@@ -743,8 +743,8 @@ class TestAreas:
 
     async def test_update_area_deletes_and_recreates(self, api):
         """update_area must delete the old area then POST to create a new one."""
-        destroy_captured = {}
-        create_captured = {}
+        destroy_captured: dict[str, Any] = {}
+        create_captured: dict[str, Any] = {}
         create_response = {
             "meta": {"code": 200, "message": "操作成功", "moreInfo": None},
             "groupInfo": {
@@ -775,7 +775,9 @@ class TestAreas:
                 payload=create_response,
                 callback=_create_cb,
             )
-            result = await api.update_area(DEVICE_SERIAL, GROUP_ID, "UpdatedName", ["ccc333"])
+            result = await api.update_area(
+                DEVICE_SERIAL, GROUP_ID, "UpdatedName", ["ccc333"]
+            )
 
         assert destroy_captured.get("called") is True
         assert create_captured["json"] == {
@@ -824,7 +826,7 @@ class TestAreas:
     # ------------------------------------------------------------------ #
 
     async def test_arm_area_uses_mode_1_by_default(self, api, ok_response):
-        captured = {}
+        captured: dict[str, Any] = {}
 
         def _callback(url, **kwargs):
             captured["json"] = kwargs.get("json") or kwargs.get("data")
@@ -840,7 +842,7 @@ class TestAreas:
         assert captured["json"]["mode"] == 1
 
     async def test_arm_area_silent_uses_mode_2_by_default(self, api, ok_response):
-        captured = {}
+        captured: dict[str, Any] = {}
 
         def _callback(url, **kwargs):
             captured["json"] = kwargs.get("json") or kwargs.get("data")
@@ -856,7 +858,7 @@ class TestAreas:
         assert captured["json"]["mode"] == 2
 
     async def test_disarm_area_uses_mode_0(self, api, ok_response):
-        captured = {}
+        captured: dict[str, Any] = {}
 
         def _callback(url, **kwargs):
             captured["json"] = kwargs.get("json") or kwargs.get("data")
@@ -886,7 +888,13 @@ def _one_member_area_response():
     """GET /v3/devices/group/{serial}/{group_id} with a single member."""
     return {
         "meta": {"code": 200},
-        "list": [{"groupId": GROUP_ID, "groupDevSerial": DEVICE_SERIAL, "memberId": MEMBER_ID_1}],
+        "list": [
+            {
+                "groupId": GROUP_ID,
+                "groupDevSerial": DEVICE_SERIAL,
+                "memberId": MEMBER_ID_1,
+            }
+        ],
     }
 
 
@@ -896,8 +904,16 @@ def _two_member_area_response():
     return {
         "meta": {"code": 200},
         "list": [
-            {"groupId": GROUP_ID, "groupDevSerial": DEVICE_SERIAL, "memberId": MEMBER_ID_1},
-            {"groupId": GROUP_ID, "groupDevSerial": DEVICE_SERIAL, "memberId": MEMBER_ID_2},
+            {
+                "groupId": GROUP_ID,
+                "groupDevSerial": DEVICE_SERIAL,
+                "memberId": MEMBER_ID_1,
+            },
+            {
+                "groupId": GROUP_ID,
+                "groupDevSerial": DEVICE_SERIAL,
+                "memberId": MEMBER_ID_2,
+            },
         ],
     }
 
@@ -956,7 +972,7 @@ class TestEditAreaMembers:
         self, api, _one_member_area_response, _list_areas_for_edit, ok_response
     ):
         """Adding a camera ID appends it to existing members."""
-        create_captured = {}
+        create_captured: dict[str, Any] = {}
 
         def _create_cb(url, **kwargs):
             create_captured["json"] = kwargs.get("json") or kwargs.get("data")
@@ -985,7 +1001,7 @@ class TestEditAreaMembers:
         self, api, _one_member_area_response, _list_areas_for_edit, ok_response
     ):
         """Adding an ID already present must not create duplicates."""
-        create_captured = {}
+        create_captured: dict[str, Any] = {}
 
         def _create_cb(url, **kwargs):
             create_captured["json"] = kwargs.get("json") or kwargs.get("data")
@@ -1016,7 +1032,7 @@ class TestEditAreaMembers:
         self, api, _two_member_area_response, _list_areas_for_edit, ok_response
     ):
         """Removing one of two members recreates the area with one member."""
-        create_captured = {}
+        create_captured: dict[str, Any] = {}
 
         def _create_cb(url, **kwargs):
             create_captured["json"] = kwargs.get("json") or kwargs.get("data")
@@ -1071,7 +1087,7 @@ class TestEditAreaMembers:
         self, api, _two_member_area_response, _list_areas_for_edit, ok_response
     ):
         """Can add a new member and remove an existing one in a single call."""
-        create_captured = {}
+        create_captured: dict[str, Any] = {}
 
         def _create_cb(url, **kwargs):
             create_captured["json"] = kwargs.get("json") or kwargs.get("data")
