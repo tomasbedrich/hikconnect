@@ -557,3 +557,582 @@ async def test_get_cameras(api, get_cameras_response):
                 "is_shown": 1,
             },
         ]
+
+
+# ---------------------------------------------------------------------------
+# Area (group) management tests
+# Real response shapes captured from live API (apiieu.hik-connect.com).
+# ---------------------------------------------------------------------------
+
+BASE_URL = "https://api.hik-connect.com"
+DEVICE_SERIAL = "D12345678"
+GROUP_ID = 242456
+
+
+@pytest.fixture
+def list_areas_response():
+    """Real-shaped GET /v3/devices/group/{serial}/list response."""
+    return {
+        "meta": {"code": 200, "message": "操作成功", "moreInfo": None},
+        "list": [
+            {
+                "groupId": 110548,
+                "groupDevSerial": DEVICE_SERIAL,
+                "groupName": "aleie",
+                "groupType": 2,
+                "mode": 1,
+                "createTime": 1737221666000,
+                "modifyTime": 1737221666000,
+            },
+            {
+                "groupId": GROUP_ID,
+                "groupDevSerial": DEVICE_SERIAL,
+                "groupName": "Casa",
+                "groupType": 2,
+                "mode": 0,
+                "createTime": 1779641493000,
+                "modifyTime": 1779641493000,
+            },
+        ],
+    }
+
+
+@pytest.fixture
+def get_area_response():
+    """Real-shaped GET /v3/devices/group/{serial}/{group_id} response."""
+    return {
+        "meta": {"code": 200, "message": "操作成功", "moreInfo": None},
+        "list": [
+            {
+                "groupId": GROUP_ID,
+                "groupDevSerial": DEVICE_SERIAL,
+                "memberId": "14f432199e2d4705b7dd728bfa36fb46",
+            },
+            {
+                "groupId": GROUP_ID,
+                "groupDevSerial": DEVICE_SERIAL,
+                "memberId": "e31335fd6edf44d88a495a58e35aee73",
+            },
+        ],
+    }
+
+
+@pytest.fixture
+def ok_response():
+    """Generic success response used for write/delete/arm operations."""
+    return {"meta": {"code": 200, "message": "操作成功", "moreInfo": None}}
+
+
+class TestAreas:
+    # ------------------------------------------------------------------ #
+    # get_areas                                                            #
+    # ------------------------------------------------------------------ #
+
+    async def test_get_areas_yields_correct_shapes(
+        self, api, list_areas_response
+    ):
+        with aioresponses() as mock:
+            mock.get(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/list",
+                payload=list_areas_response,
+            )
+            areas = [area async for area in api.get_areas(DEVICE_SERIAL)]
+
+        assert len(areas) == 2
+        assert areas[0] == {
+            "group_id": 110548,
+            "device_serial": DEVICE_SERIAL,
+            "group_name": "aleie",
+            "group_type": 2,
+            "mode": 1,
+            "create_time": 1737221666000,
+            "modify_time": 1737221666000,
+        }
+        assert areas[1]["group_name"] == "Casa"
+        assert areas[1]["mode"] == 0
+
+    async def test_get_areas_empty_list(self, api):
+        payload = {"meta": {"code": 200}, "list": []}
+        with aioresponses() as mock:
+            mock.get(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/list",
+                payload=payload,
+            )
+            areas = [area async for area in api.get_areas(DEVICE_SERIAL)]
+        assert areas == []
+
+    # ------------------------------------------------------------------ #
+    # get_area                                                             #
+    # ------------------------------------------------------------------ #
+
+    async def test_get_area_returns_member_list(self, api, get_area_response):
+        with aioresponses() as mock:
+            mock.get(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/{GROUP_ID}",
+                payload=get_area_response,
+            )
+            members = await api.get_area(DEVICE_SERIAL, GROUP_ID)
+
+        assert len(members) == 2
+        assert members[0] == {
+            "group_id": GROUP_ID,
+            "device_serial": DEVICE_SERIAL,
+            "member_id": "14f432199e2d4705b7dd728bfa36fb46",
+        }
+        assert members[1]["member_id"] == "e31335fd6edf44d88a495a58e35aee73"
+
+    async def test_get_area_empty_group(self, api):
+        payload = {"meta": {"code": 200}, "list": []}
+        with aioresponses() as mock:
+            mock.get(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/{GROUP_ID}",
+                payload=payload,
+            )
+            members = await api.get_area(DEVICE_SERIAL, GROUP_ID)
+        assert members == []
+
+    # ------------------------------------------------------------------ #
+    # create_area                                                          #
+    # ------------------------------------------------------------------ #
+
+    async def test_create_area_sends_correct_payload(self, api):
+        resource_ids = ["aaa111", "bbb222"]
+        captured = {}
+        create_response = {
+            "meta": {"code": 200, "message": "操作成功", "moreInfo": None},
+            "groupInfo": {
+                "groupId": 99999,
+                "groupDevSerial": DEVICE_SERIAL,
+                "groupName": "TestArea",
+                "groupType": 2,
+                "mode": None,
+                "createTime": 1783933420000,
+                "modifyTime": 1783933420000,
+            },
+        }
+
+        def _callback(url, **kwargs):
+            captured["json"] = kwargs.get("json") or kwargs.get("data")
+
+        with aioresponses() as mock:
+            mock.post(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}",
+                payload=create_response,
+                callback=_callback,
+            )
+            result = await api.create_area(DEVICE_SERIAL, "TestArea", resource_ids)
+
+        assert captured["json"] == {
+            "groupName": "TestArea",
+            "resourceIds": resource_ids,
+        }
+        # Verify normalized return shape
+        assert result == {
+            "group_id": 99999,
+            "device_serial": DEVICE_SERIAL,
+            "group_name": "TestArea",
+            "group_type": 2,
+            "mode": None,
+            "create_time": 1783933420000,
+            "modify_time": 1783933420000,
+        }
+
+    # ------------------------------------------------------------------ #
+    # update_area                                                          #
+    # ------------------------------------------------------------------ #
+
+    async def test_update_area_deletes_and_recreates(self, api):
+        """update_area must delete the old area then POST to create a new one."""
+        destroy_captured = {}
+        create_captured = {}
+        create_response = {
+            "meta": {"code": 200, "message": "操作成功", "moreInfo": None},
+            "groupInfo": {
+                "groupId": 99998,
+                "groupDevSerial": DEVICE_SERIAL,
+                "groupName": "UpdatedName",
+                "groupType": 2,
+                "mode": None,
+                "createTime": 1783933420000,
+                "modifyTime": 1783933420000,
+            },
+        }
+
+        def _destroy_cb(url, **kwargs):
+            destroy_captured["called"] = True
+
+        def _create_cb(url, **kwargs):
+            create_captured["json"] = kwargs.get("json") or kwargs.get("data")
+
+        with aioresponses() as mock:
+            mock.delete(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/{GROUP_ID}",
+                payload={"meta": {"code": 200}},
+                callback=_destroy_cb,
+            )
+            mock.post(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}",
+                payload=create_response,
+                callback=_create_cb,
+            )
+            result = await api.update_area(DEVICE_SERIAL, GROUP_ID, "UpdatedName", ["ccc333"])
+
+        assert destroy_captured.get("called") is True
+        assert create_captured["json"] == {
+            "groupName": "UpdatedName",
+            "resourceIds": ["ccc333"],
+        }
+        assert result["group_id"] == 99998
+
+    # ------------------------------------------------------------------ #
+    # delete_area                                                          #
+    # ------------------------------------------------------------------ #
+
+    async def test_delete_area_uses_delete_endpoint(self, api, ok_response):
+        with aioresponses() as mock:
+            mock.delete(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/{GROUP_ID}",
+                payload=ok_response,
+            )
+            # delete_area returns None on success
+            result = await api.delete_area(DEVICE_SERIAL, GROUP_ID)
+
+        assert result is None
+
+    # ------------------------------------------------------------------ #
+    # set_area_defence_mode                                                #
+    # ------------------------------------------------------------------ #
+
+    async def test_set_area_defence_mode_sends_correct_payload(self, api, ok_response):
+        captured = {}
+
+        def _callback(url, **kwargs):
+            captured["json"] = kwargs.get("json") or kwargs.get("data")
+
+        with aioresponses() as mock:
+            mock.post(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/switchDefenceMode",
+                payload=ok_response,
+                callback=_callback,
+            )
+            await api.set_area_defence_mode(DEVICE_SERIAL, GROUP_ID, 1)
+
+        assert captured["json"] == {"groupId": GROUP_ID, "mode": 1}
+
+    # ------------------------------------------------------------------ #
+    # Convenience wrappers                                                 #
+    # ------------------------------------------------------------------ #
+
+    async def test_arm_area_uses_mode_1_by_default(self, api, ok_response):
+        captured = {}
+
+        def _callback(url, **kwargs):
+            captured["json"] = kwargs.get("json") or kwargs.get("data")
+
+        with aioresponses() as mock:
+            mock.post(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/switchDefenceMode",
+                payload=ok_response,
+                callback=_callback,
+            )
+            await api.arm_area(DEVICE_SERIAL, GROUP_ID)
+
+        assert captured["json"]["mode"] == 1
+
+    async def test_arm_area_silent_uses_mode_2_by_default(self, api, ok_response):
+        captured = {}
+
+        def _callback(url, **kwargs):
+            captured["json"] = kwargs.get("json") or kwargs.get("data")
+
+        with aioresponses() as mock:
+            mock.post(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/switchDefenceMode",
+                payload=ok_response,
+                callback=_callback,
+            )
+            await api.arm_area_silent(DEVICE_SERIAL, GROUP_ID)
+
+        assert captured["json"]["mode"] == 2
+
+    async def test_disarm_area_uses_mode_0(self, api, ok_response):
+        captured = {}
+
+        def _callback(url, **kwargs):
+            captured["json"] = kwargs.get("json") or kwargs.get("data")
+
+        with aioresponses() as mock:
+            mock.post(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/switchDefenceMode",
+                payload=ok_response,
+                callback=_callback,
+            )
+            await api.disarm_area(DEVICE_SERIAL, GROUP_ID)
+
+        assert captured["json"]["mode"] == 0
+
+
+# ---------------------------------------------------------------------------
+# edit_area_members tests
+# ---------------------------------------------------------------------------
+
+MEMBER_ID_1 = "aaaa1111bbbb2222cccc3333dddd4444"
+MEMBER_ID_2 = "eeee5555ffff6666aaaa7777bbbb8888"
+MEMBER_ID_3 = "cccc9999dddd0000eeee1111ffff2222"
+
+
+@pytest.fixture
+def _one_member_area_response():
+    """GET /v3/devices/group/{serial}/{group_id} with a single member."""
+    return {
+        "meta": {"code": 200},
+        "list": [{"groupId": GROUP_ID, "groupDevSerial": DEVICE_SERIAL, "memberId": MEMBER_ID_1}],
+    }
+
+
+@pytest.fixture
+def _two_member_area_response():
+    """GET /v3/devices/group/{serial}/{group_id} with two members."""
+    return {
+        "meta": {"code": 200},
+        "list": [
+            {"groupId": GROUP_ID, "groupDevSerial": DEVICE_SERIAL, "memberId": MEMBER_ID_1},
+            {"groupId": GROUP_ID, "groupDevSerial": DEVICE_SERIAL, "memberId": MEMBER_ID_2},
+        ],
+    }
+
+
+@pytest.fixture
+def _list_areas_for_edit():
+    """GET /v3/devices/group/{serial}/list used by edit_area_members name lookup."""
+    return {
+        "meta": {"code": 200},
+        "list": [
+            {
+                "groupId": GROUP_ID,
+                "groupDevSerial": DEVICE_SERIAL,
+                "groupName": "MyArea",
+                "groupType": 2,
+                "mode": 0,
+                "createTime": 1000,
+                "modifyTime": 1000,
+            }
+        ],
+    }
+
+
+class TestEditAreaMembers:
+    # Shared recreate response fixture value used across tests
+    _RECREATE_RESPONSE = {
+        "meta": {"code": 200, "message": "操作成功", "moreInfo": None},
+        "groupInfo": {
+            "groupId": 300000,
+            "groupDevSerial": DEVICE_SERIAL,
+            "groupName": "MyArea",
+            "groupType": 2,
+            "mode": None,
+            "createTime": 1800000000000,
+            "modifyTime": 1800000000000,
+        },
+    }
+
+    def _mock_update(self, mock, ok_response, create_callback=None):
+        """Register the DELETE → POST(create) mock pair used by update_area."""
+        mock.delete(
+            f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/{GROUP_ID}",
+            payload=ok_response,
+        )
+        mock.post(
+            f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}",
+            payload=self._RECREATE_RESPONSE,
+            callback=create_callback,
+        )
+
+    # ------------------------------------------------------------------ #
+    # add members                                                          #
+    # ------------------------------------------------------------------ #
+
+    async def test_add_member_updates_area(
+        self, api, _one_member_area_response, _list_areas_for_edit, ok_response
+    ):
+        """Adding a camera ID appends it to existing members."""
+        create_captured = {}
+
+        def _create_cb(url, **kwargs):
+            create_captured["json"] = kwargs.get("json") or kwargs.get("data")
+
+        with aioresponses() as mock:
+            mock.get(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/{GROUP_ID}",
+                payload=_one_member_area_response,
+            )
+            mock.get(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/list",
+                payload=_list_areas_for_edit,
+            )
+            self._mock_update(mock, ok_response, create_callback=_create_cb)
+            result = await api.edit_area_members(
+                DEVICE_SERIAL, GROUP_ID, add_ids=[MEMBER_ID_2]
+            )
+
+        assert result["action"] == "updated"
+        assert result["group_id"] == 300000
+        assert result["member_ids"] == [MEMBER_ID_1, MEMBER_ID_2]
+        assert create_captured["json"]["resourceIds"] == [MEMBER_ID_1, MEMBER_ID_2]
+        assert create_captured["json"]["groupName"] == "MyArea"
+
+    async def test_add_duplicate_member_is_ignored(
+        self, api, _one_member_area_response, _list_areas_for_edit, ok_response
+    ):
+        """Adding an ID already present must not create duplicates."""
+        create_captured = {}
+
+        def _create_cb(url, **kwargs):
+            create_captured["json"] = kwargs.get("json") or kwargs.get("data")
+
+        with aioresponses() as mock:
+            mock.get(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/{GROUP_ID}",
+                payload=_one_member_area_response,
+            )
+            mock.get(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/list",
+                payload=_list_areas_for_edit,
+            )
+            self._mock_update(mock, ok_response, create_callback=_create_cb)
+            result = await api.edit_area_members(
+                DEVICE_SERIAL, GROUP_ID, add_ids=[MEMBER_ID_1]
+            )
+
+        assert result["action"] == "updated"
+        assert result["member_ids"] == [MEMBER_ID_1]  # no duplicates
+        assert create_captured["json"]["resourceIds"] == [MEMBER_ID_1]
+
+    # ------------------------------------------------------------------ #
+    # remove members                                                       #
+    # ------------------------------------------------------------------ #
+
+    async def test_remove_member_keeps_area_when_others_remain(
+        self, api, _two_member_area_response, _list_areas_for_edit, ok_response
+    ):
+        """Removing one of two members recreates the area with one member."""
+        create_captured = {}
+
+        def _create_cb(url, **kwargs):
+            create_captured["json"] = kwargs.get("json") or kwargs.get("data")
+
+        with aioresponses() as mock:
+            mock.get(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/{GROUP_ID}",
+                payload=_two_member_area_response,
+            )
+            mock.get(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/list",
+                payload=_list_areas_for_edit,
+            )
+            self._mock_update(mock, ok_response, create_callback=_create_cb)
+            result = await api.edit_area_members(
+                DEVICE_SERIAL, GROUP_ID, remove_ids=[MEMBER_ID_2]
+            )
+
+        assert result["action"] == "updated"
+        assert result["member_ids"] == [MEMBER_ID_1]
+        assert create_captured["json"]["resourceIds"] == [MEMBER_ID_1]
+
+    async def test_remove_last_member_deletes_area(
+        self, api, _one_member_area_response, _list_areas_for_edit, ok_response
+    ):
+        """Removing the last member must delete the area (not recreate it)."""
+        with aioresponses() as mock:
+            mock.get(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/{GROUP_ID}",
+                payload=_one_member_area_response,
+            )
+            mock.get(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/list",
+                payload=_list_areas_for_edit,
+            )
+            mock.delete(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/{GROUP_ID}",
+                payload=ok_response,
+            )
+            result = await api.edit_area_members(
+                DEVICE_SERIAL, GROUP_ID, remove_ids=[MEMBER_ID_1]
+            )
+
+        assert result["action"] == "deleted"
+        assert result["group_id"] == GROUP_ID
+
+    # ------------------------------------------------------------------ #
+    # add + remove simultaneously                                          #
+    # ------------------------------------------------------------------ #
+
+    async def test_add_and_remove_simultaneously(
+        self, api, _two_member_area_response, _list_areas_for_edit, ok_response
+    ):
+        """Can add a new member and remove an existing one in a single call."""
+        create_captured = {}
+
+        def _create_cb(url, **kwargs):
+            create_captured["json"] = kwargs.get("json") or kwargs.get("data")
+
+        with aioresponses() as mock:
+            mock.get(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/{GROUP_ID}",
+                payload=_two_member_area_response,
+            )
+            mock.get(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/list",
+                payload=_list_areas_for_edit,
+            )
+            self._mock_update(mock, ok_response, create_callback=_create_cb)
+            result = await api.edit_area_members(
+                DEVICE_SERIAL,
+                GROUP_ID,
+                add_ids=[MEMBER_ID_3],
+                remove_ids=[MEMBER_ID_1],
+            )
+
+        assert result["action"] == "updated"
+        # MEMBER_ID_1 removed, MEMBER_ID_2 kept, MEMBER_ID_3 appended
+        assert result["member_ids"] == [MEMBER_ID_2, MEMBER_ID_3]
+
+    # ------------------------------------------------------------------ #
+    # group_name shortcut                                                  #
+    # ------------------------------------------------------------------ #
+
+    async def test_provided_group_name_skips_area_list_call(
+        self, api, _one_member_area_response, ok_response
+    ):
+        """When group_name is passed explicitly, get_areas() must NOT be called."""
+        with aioresponses() as mock:
+            mock.get(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/{GROUP_ID}",
+                payload=_one_member_area_response,
+            )
+            # update_area = delete + recreate; no /list call should happen
+            mock.delete(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}/{GROUP_ID}",
+                payload=ok_response,
+            )
+            mock.post(
+                f"{BASE_URL}/v3/devices/group/{DEVICE_SERIAL}",
+                payload=self._RECREATE_RESPONSE,
+            )
+            result = await api.edit_area_members(
+                DEVICE_SERIAL,
+                GROUP_ID,
+                add_ids=[MEMBER_ID_2],
+                group_name="ExplicitName",
+            )
+
+        assert result["action"] == "updated"
+
+    # ------------------------------------------------------------------ #
+    # error cases                                                          #
+    # ------------------------------------------------------------------ #
+
+    async def test_raises_when_no_ids_provided(self, api):
+        """ValueError if both add_ids and remove_ids are empty."""
+        with pytest.raises(ValueError, match="add_ids.*remove_ids"):
+            await api.edit_area_members(DEVICE_SERIAL, GROUP_ID)

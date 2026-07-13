@@ -240,6 +240,308 @@ class HikConnect:
                 "is_shown": camera["isShow"],
             }
 
+    # ------------------------------------------------------------------
+    # Area (group) management
+    # ------------------------------------------------------------------
+
+    async def get_areas(self, device_serial: str):
+        """Get all areas (groups) configured on a device.
+
+        Yields dicts with keys:
+            group_id (int), device_serial (str), group_name (str),
+            group_type (int), mode (int), create_time (int), modify_time (int)
+
+        ``mode`` meanings (as observed): 0 = disarmed, 1 = armed, 2 = armed-silent.
+        """
+        async with self.client.get(
+            f"{self.BASE_URL}/v3/devices/group/{device_serial}/list"
+        ) as res:
+            res_json = await res.json()
+        log.debug("Got area list response '%s'", res_json)
+        log.info("Received area list for device '%s'", device_serial)
+        for area in res_json["list"]:
+            yield {
+                "group_id": area["groupId"],
+                "device_serial": area["groupDevSerial"],
+                "group_name": area["groupName"],
+                "group_type": area["groupType"],
+                "mode": area["mode"],
+                "create_time": area["createTime"],
+                "modify_time": area["modifyTime"],
+            }
+
+    async def get_area(self, device_serial: str, group_id: int):
+        """Get the member resources belonging to an area.
+
+        Returns a list of dicts with keys:
+            group_id (int), device_serial (str), member_id (str)
+
+        ``member_id`` corresponds to a camera ``id`` returned by ``get_cameras()``.
+        """
+        async with self.client.get(
+            f"{self.BASE_URL}/v3/devices/group/{device_serial}/{group_id}"
+        ) as res:
+            res_json = await res.json()
+        log.debug("Got area detail response '%s'", res_json)
+        log.info(
+            "Received area detail for device '%s' group '%d'", device_serial, group_id
+        )
+        return [
+            {
+                "group_id": member["groupId"],
+                "device_serial": member["groupDevSerial"],
+                "member_id": member["memberId"],
+            }
+            for member in res_json["list"]
+        ]
+
+    async def create_area(
+        self, device_serial: str, group_name: str, resource_ids: list
+    ):
+        """Create a new area (group) on a device.
+
+        Args:
+            device_serial: Serial of the NVR/device.
+            group_name: Human-readable name for the new area.
+            resource_ids: List of camera ``id`` strings to include in the area.
+                          Camera IDs can be obtained from ``get_cameras()``.
+                          Must contain at least one ID.
+
+        Returns:
+            dict with the same shape as items yielded by ``get_areas()``:
+            ``group_id``, ``device_serial``, ``group_name``, ``group_type``,
+            ``mode``, ``create_time``, ``modify_time``.
+        """
+        payload = {"groupName": group_name, "resourceIds": resource_ids}
+        async with self.client.post(
+            f"{self.BASE_URL}/v3/devices/group/{device_serial}", json=payload
+        ) as res:
+            res_json = await res.json()
+        log.debug("Got create area response '%s'", res_json)
+        log.info(
+            "Created area '%s' on device '%s'", group_name, device_serial
+        )
+        if "groupInfo" not in res_json:
+            raise ValueError(f"API error creating area: {res_json}")
+        info = res_json["groupInfo"]
+        return {
+            "group_id": info["groupId"],
+            "device_serial": info["groupDevSerial"],
+            "group_name": info["groupName"],
+            "group_type": info["groupType"],
+            "mode": info["mode"],
+            "create_time": info["createTime"],
+            "modify_time": info["modifyTime"],
+        }
+
+    async def update_area(
+        self, device_serial: str, group_id: int, group_name: str, resource_ids: list
+    ):
+        """Update an existing area (group) on a device.
+
+        .. note::
+            The Hik-Connect API does not support a PATCH/PUT verb for groups.
+            This method implements update as **delete → recreate**: the old area
+            is deleted and a new one is created with the same name and the
+            supplied member list.  The returned dict contains the new
+            ``group_id`` assigned by the API — callers must update any stored
+            references.
+
+        Args:
+            device_serial: Serial of the NVR/device.
+            group_id: ID of the area to replace (from ``get_areas()``).
+            group_name: Name for the recreated area.
+            resource_ids: Complete list of camera ``id`` strings for the area.
+                          Must contain at least one ID.
+
+        Returns:
+            dict with the same shape as ``create_area()`` / ``get_areas()``
+            items, including the new ``group_id``.
+        """
+        await self.delete_area(device_serial, group_id)
+        result = await self.create_area(device_serial, group_name, resource_ids)
+        log.info(
+            "Area '%d' on device '%s' replaced by new area '%d'",
+            group_id,
+            device_serial,
+            result["group_id"],
+        )
+        return result
+
+    async def edit_area_members(
+        self,
+        device_serial: str,
+        group_id: int,
+        *,
+        add_ids: list | None = None,
+        remove_ids: list | None = None,
+        group_name: str | None = None,
+    ) -> dict:
+        """Add and/or remove members from an area, auto-deleting if it becomes empty.
+
+        Fetches the current member list, applies additions and removals, then
+        either updates the area (members remain) or deletes it (no members left).
+        The area cannot be empty on the Hik-Connect platform, so deletion is
+        automatic when the last member would be removed.
+
+        Args:
+            device_serial: Serial of the NVR/device.
+            group_id: ID of the area to edit (from ``get_areas()``).
+            add_ids: Camera IDs to add to the area.  Duplicates are ignored.
+            remove_ids: Camera IDs to remove from the area.  Unknown IDs are
+                        ignored.
+            group_name: Name to preserve on the area when updating.  If ``None``
+                        the name is fetched automatically via ``get_areas()``.
+                        Pass it explicitly to avoid an extra API round-trip when
+                        the caller already has the area info cached.
+
+        Returns:
+            dict with key ``"action"``:
+
+            * ``"updated"`` — area was modified; also contains ``"member_ids"``
+              (the new list of member IDs after the edit).
+            * ``"deleted"`` — area was deleted because no members remained.
+
+        Raises:
+            ValueError: If both ``add_ids`` and ``remove_ids`` are empty or
+                        ``None``.
+            LookupError: If ``group_name`` is ``None`` and the area cannot be
+                         found in ``get_areas()`` (e.g. wrong ``group_id``).
+        """
+        add_ids = list(add_ids or [])
+        remove_ids_set = set(remove_ids or [])
+
+        if not add_ids and not remove_ids_set:
+            raise ValueError(
+                "At least one of 'add_ids' or 'remove_ids' must be provided."
+            )
+
+        # Fetch current members
+        current_members = await self.get_area(device_serial, group_id)
+        current_ids = [m["member_id"] for m in current_members]
+
+        # Resolve group_name if not supplied
+        if group_name is None:
+            async for area in self.get_areas(device_serial):
+                if area["group_id"] == group_id:
+                    group_name = area["group_name"]
+                    break
+            if group_name is None:
+                raise LookupError(
+                    f"Area with group_id={group_id} not found on device '{device_serial}'."
+                )
+
+        # Build new member list: (current ∪ add_ids) \ remove_ids, preserving order
+        seen: set[str] = set()
+        new_ids: list[str] = []
+        for mid in current_ids + add_ids:
+            if mid not in remove_ids_set and mid not in seen:
+                seen.add(mid)
+                new_ids.append(mid)
+
+        if not new_ids:
+            # Last member removed — the API forbids empty areas, so delete it
+            await self.delete_area(device_serial, group_id)
+            log.info(
+                "Area '%d' on device '%s' deleted (no members remaining)",
+                group_id,
+                device_serial,
+            )
+            return {"action": "deleted", "group_id": group_id}
+
+        # update_area = delete + recreate; returns new group info
+        new_area = await self.update_area(device_serial, group_id, group_name, new_ids)
+        log.info(
+            "Area '%d' on device '%s' updated -> new group_id=%d, %d member(s)",
+            group_id,
+            device_serial,
+            new_area["group_id"],
+            len(new_ids),
+        )
+        return {
+            "action": "updated",
+            "group_id": new_area["group_id"],
+            "member_ids": new_ids,
+        }
+
+    async def delete_area(self, device_serial: str, group_id: int):
+        """Delete an area (group).
+
+        Args:
+            device_serial: Serial of the NVR/device.
+            group_id: ID of the area to delete (from ``get_areas()``).
+        """
+        async with self.client.delete(
+            f"{self.BASE_URL}/v3/devices/group/{device_serial}/{group_id}"
+        ) as res:
+            res_json = await res.json()
+        log.debug("Got delete area response '%s'", res_json)
+        
+        meta = res_json.get("meta", {})
+        if meta.get("code") != 200:
+            raise ValueError(f"API error deleting area: {res_json}")
+            
+        log.info("Deleted area '%d' on device '%s'", group_id, device_serial)
+
+    async def set_area_defence_mode(
+        self, device_serial: str, group_id: int, mode: int
+    ):
+        """Set the defence (arm/disarm) mode for an area.
+
+        Args:
+            device_serial: Serial of the NVR/device.
+            group_id: ID of the area (from ``get_areas()``).
+            mode: 0 = disarmed, 1 = armed, 2 = armed-silent.
+
+        Use the convenience wrappers ``arm_area()``, ``arm_area_silent()``,
+        and ``disarm_area()`` instead of calling this directly.
+        """
+        payload = {"groupId": group_id, "mode": mode}
+        async with self.client.post(
+            f"{self.BASE_URL}/v3/devices/group/{device_serial}/switchDefenceMode",
+            json=payload,
+        ) as res:
+            res_json = await res.json()
+        log.debug("Got set defence mode response '%s'", res_json)
+        log.info(
+            "Set defence mode '%d' for area '%d' on device '%s'",
+            mode,
+            group_id,
+            device_serial,
+        )
+
+    async def arm_area(self, device_serial: str, group_id: int, mode: int = 1):
+        """Arm an area.
+
+        Args:
+            device_serial: Serial of the NVR/device.
+            group_id: ID of the area (from ``get_areas()``).
+            mode: Arm mode value (default 1). Use 2 for silent arming or call
+                  ``arm_area_silent()`` instead.
+        """
+        await self.set_area_defence_mode(device_serial, group_id, mode)
+
+    async def arm_area_silent(self, device_serial: str, group_id: int, mode: int = 2):
+        """Arm an area silently (no beep/alert on the panel).
+
+        Args:
+            device_serial: Serial of the NVR/device.
+            group_id: ID of the area (from ``get_areas()``).
+            mode: Silent arm mode value (default 2).
+        """
+        await self.set_area_defence_mode(device_serial, group_id, mode)
+
+    async def disarm_area(self, device_serial: str, group_id: int):
+        """Disarm an area.
+
+        Args:
+            device_serial: Serial of the NVR/device.
+            group_id: ID of the area (from ``get_areas()``).
+        """
+        await self.set_area_defence_mode(device_serial, group_id, 0)
+
+    # ------------------------------------------------------------------
+
     async def unlock(
         self, device_serial: str, channel_number: int, lock_index: int = 0
     ):
