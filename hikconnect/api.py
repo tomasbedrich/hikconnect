@@ -47,6 +47,14 @@ class HikConnect:
         2: "ringing",
         3: "call in progress",
     }
+    ISAPI_CALL_STATUS_MAPPING = {
+        "idle": "idle",
+        "ring": "ringing",
+        "ringing": "ringing",
+        "call": "call in progress",
+        "calling": "call in progress",
+        "talk": "call in progress",
+    }
     CALL_INFO_MAPPING = {
         "buildingNo": "building_number",
         "floorNo": "floor_number",
@@ -272,17 +280,42 @@ class HikConnect:
         log.info("Got call status for device '%s'", device_serial)
         if res_json["meta"]["code"] == 2003:
             raise DeviceOffline()
-        data = json.loads(res_json["data"])
-        try:
-            status = self.CALL_STATUS_MAPPING[data["callStatus"]]
-        except KeyError:
-            log.warning("Unknown call status: %s", data["callStatus"])
+        data = res_json["data"]
+        if isinstance(data, str):
+            data = json.loads(data)
+        elif not isinstance(data, dict):
+            raise KeyError(
+                "Unsupported call status payload format: expected str or dict, "
+                f"got {type(data).__name__}"
+            )
+
+        caller_info = data.get("callerInfo")
+        if caller_info is None:
+            caller_info = data.get("CallerInfo")
+        if caller_info is None:
+            caller_info = {}
+        if not isinstance(caller_info, dict):
+            caller_info = {}
+
+        status_raw = data.get("callStatus")
+        if status_raw is None:
+            status_raw = caller_info.get("status")
+
+        if status_raw is None:
             status = "unknown"
+        elif isinstance(status_raw, str):
+            status = self.ISAPI_CALL_STATUS_MAPPING.get(status_raw.lower(), "unknown")
+            if status == "unknown":
+                log.warning("Unknown call status: %s", status_raw)
+        else:
+            status = self.CALL_STATUS_MAPPING.get(status_raw, "unknown")
+            if status == "unknown":
+                log.warning("Unknown call status: %s", status_raw)
 
         info = {}
         for in_key, out_key in self.CALL_INFO_MAPPING.items():
             try:
-                info[out_key] = data["callerInfo"][in_key]
+                info[out_key] = caller_info[in_key]
             except KeyError:
                 # normally we would log warning, but it seems to be pretty common situation:
                 # https://github.com/tomasbedrich/home-assistant-hikconnect/issues/4#issuecomment-1022526060
