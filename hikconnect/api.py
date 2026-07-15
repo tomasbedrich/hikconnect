@@ -40,6 +40,8 @@ class _HikConnectClient(ClientSession):
 
 
 class HikConnect:
+    # pylint: disable=too-many-public-methods
+
     BASE_URL = "https://api.hik-connect.com"
 
     CALL_STATUS_MAPPING = {
@@ -366,6 +368,7 @@ class HikConnect:
         )
         return result
 
+    # pylint: disable=too-many-arguments
     async def edit_area_members(
         self,
         device_serial: str,

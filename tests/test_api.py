@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines
 from typing import Any
 
 import pytest
@@ -711,7 +712,7 @@ class TestAreas:
             },
         }
 
-        def _callback(url, **kwargs):
+        def _callback(_url, **kwargs):
             captured["json"] = kwargs.get("json") or kwargs.get("data")
 
         with aioresponses() as mock:
@@ -758,10 +759,10 @@ class TestAreas:
             },
         }
 
-        def _destroy_cb(url, **kwargs):
+        def _destroy_cb(_url, **kwargs):
             destroy_captured["called"] = True
 
-        def _create_cb(url, **kwargs):
+        def _create_cb(_url, **kwargs):
             create_captured["json"] = kwargs.get("json") or kwargs.get("data")
 
         with aioresponses() as mock:
@@ -808,7 +809,7 @@ class TestAreas:
     async def test_set_area_defence_mode_sends_correct_payload(self, api, ok_response):
         captured = {}
 
-        def _callback(url, **kwargs):
+        def _callback(_url, **kwargs):
             captured["json"] = kwargs.get("json") or kwargs.get("data")
 
         with aioresponses() as mock:
@@ -828,7 +829,7 @@ class TestAreas:
     async def test_arm_area_uses_mode_1_by_default(self, api, ok_response):
         captured: dict[str, Any] = {}
 
-        def _callback(url, **kwargs):
+        def _callback(_url, **kwargs):
             captured["json"] = kwargs.get("json") or kwargs.get("data")
 
         with aioresponses() as mock:
@@ -844,7 +845,7 @@ class TestAreas:
     async def test_arm_area_silent_uses_mode_2_by_default(self, api, ok_response):
         captured: dict[str, Any] = {}
 
-        def _callback(url, **kwargs):
+        def _callback(_url, **kwargs):
             captured["json"] = kwargs.get("json") or kwargs.get("data")
 
         with aioresponses() as mock:
@@ -860,7 +861,7 @@ class TestAreas:
     async def test_disarm_area_uses_mode_0(self, api, ok_response):
         captured: dict[str, Any] = {}
 
-        def _callback(url, **kwargs):
+        def _callback(_url, **kwargs):
             captured["json"] = kwargs.get("json") or kwargs.get("data")
 
         with aioresponses() as mock:
@@ -974,7 +975,7 @@ class TestEditAreaMembers:
         """Adding a camera ID appends it to existing members."""
         create_captured: dict[str, Any] = {}
 
-        def _create_cb(url, **kwargs):
+        def _create_cb(_url, **kwargs):
             create_captured["json"] = kwargs.get("json") or kwargs.get("data")
 
         with aioresponses() as mock:
@@ -1003,7 +1004,7 @@ class TestEditAreaMembers:
         """Adding an ID already present must not create duplicates."""
         create_captured: dict[str, Any] = {}
 
-        def _create_cb(url, **kwargs):
+        def _create_cb(_url, **kwargs):
             create_captured["json"] = kwargs.get("json") or kwargs.get("data")
 
         with aioresponses() as mock:
@@ -1034,7 +1035,7 @@ class TestEditAreaMembers:
         """Removing one of two members recreates the area with one member."""
         create_captured: dict[str, Any] = {}
 
-        def _create_cb(url, **kwargs):
+        def _create_cb(_url, **kwargs):
             create_captured["json"] = kwargs.get("json") or kwargs.get("data")
 
         with aioresponses() as mock:
@@ -1089,7 +1090,7 @@ class TestEditAreaMembers:
         """Can add a new member and remove an existing one in a single call."""
         create_captured: dict[str, Any] = {}
 
-        def _create_cb(url, **kwargs):
+        def _create_cb(_url, **kwargs):
             create_captured["json"] = kwargs.get("json") or kwargs.get("data")
 
         with aioresponses() as mock:
