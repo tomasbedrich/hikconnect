@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - '[0-9]*.[0-9]*.[0-9]*'
 
 jobs:
   release:
@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history so the version can be derived from the git tag
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -27,22 +29,18 @@ jobs:
       - name: Install Poetry
         run: python -m pip install poetry
 
-      - name: Check tag matches package version
-        run: |
-          tag_version="${GITHUB_REF_NAME#v}"
-          package_version="$(python -m poetry version --short)"
-          if [ "$tag_version" != "$package_version" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match pyproject.toml version $package_version" >&2
-            exit 1
-          fi
-
       - name: Run unit tests
         run: |
           python -m poetry install
           python -m poetry run pytest tests
 
       - name: Build package
-        run: python -m poetry build
+        run: |
+          python -m pip install build
+          python -m build
+
+      - name: Check built version matches tag
+        run: ls "dist/hikconnect-${GITHUB_REF_NAME}.tar.gz" "dist/hikconnect-${GITHUB_REF_NAME}-py3-none-any.whl"
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
