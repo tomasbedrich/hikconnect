@@ -1,7 +1,7 @@
 [tool.poetry]
 
 name = "hikconnect"
-version = "2.1.0"
+version = "0.0.0"  # placeholder - the real version is derived from the git tag, see [tool.poetry-dynamic-versioning]
 description = "Communicate with Hikvision smart doorbells via Hik-Connect cloud."
 
 license = "MIT"
@@ -68,7 +68,14 @@ pygments = "^2.18.0"
 
 target-version = ["py311"]
 
+[tool.poetry-dynamic-versioning]
+
+enable = true
+vcs = "git"
+style = "pep440"
+pattern = "default-unprefixed"  # tags are plain "1.2.3", without "v" prefix
+
 [build-system]
 
-requires = ["poetry-core>=1.0.0"]
-build-backend = "poetry.core.masonry.api"
+requires = ["poetry-core>=1.0.0", "poetry-dynamic-versioning>=1.0.0,<2.0.0"]
+build-backend = "poetry_dynamic_versioning.backend"
