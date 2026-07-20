@@ -502,6 +502,13 @@ class HikConnect:
         ) as res:
             res_json = await res.json()
         log.debug("Got set defence mode response '%s'", res_json)
+
+        meta = res_json.get("meta", {})
+        if meta.get("code") == 70002:
+            raise DeviceOffline()
+        if meta.get("code") != 200:
+            raise ValueError(f"API error setting defence mode: {res_json}")
+
         log.info(
             "Set defence mode '%d' for area '%d' on device '%s'",
             mode,

@@ -88,7 +88,7 @@ async with HikConnect() as api:
     cameras = [camera async for camera in api.get_cameras(my_device_serial)]
     camera_ids = [c["id"] for c in cameras[:2]]  # first two cameras
     result = await api.create_area(my_device_serial, "Front Gate", camera_ids)
-    new_group_id = result.get("groupId")  # or parse from result as needed
+    new_group_id = result["group_id"]
 
     # Update an existing area (rename and/or change cameras)
     await api.update_area(my_device_serial, my_group_id, "New Name", camera_ids)
@@ -99,7 +99,7 @@ async with HikConnect() as api:
     await api.disarm_area(my_device_serial, my_group_id)        # mode=0
 
     # Delete an area
-    await api.delete_area(my_group_id)
+    await api.delete_area(my_device_serial, my_group_id)
 ```
 
 If you are new to `async` Python, you simply need to wrap your code in a construction like this:
