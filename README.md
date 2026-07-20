@@ -54,6 +54,52 @@ async with HikConnect() as api:
     # call this periodically at least once per 30 mins!
     if api.is_refresh_login_needed():
         await api.refresh_login()
+
+    # ---- Area (group) management ----------------------------------------
+
+    # List all areas on a device
+    areas = [area async for area in api.get_areas(my_device_serial)]
+    print(areas)
+    # [
+    #   {
+    #     'group_id': 110548,
+    #     'device_serial': 'ZZZZZZZZZ',
+    #     'group_name': 'Entrance',
+    #     'group_type': 2,
+    #     'mode': 1,           # 0=disarmed, 1=armed, 2=armed-silent
+    #     'create_time': 1737221666000,
+    #     'modify_time': 1737221666000,
+    #   },
+    #   ...
+    # ]
+
+    my_group_id = areas[0]["group_id"]
+
+    # Get cameras (resources) assigned to an area
+    members = await api.get_area(my_device_serial, my_group_id)
+    print(members)
+    # [
+    #   {'group_id': 110548, 'device_serial': 'ZZZZZZZZZ', 'member_id': 'abc123...'},
+    #   ...
+    # ]
+    # member_id corresponds to camera id returned by get_cameras()
+
+    # Create a new area with specific cameras
+    cameras = [camera async for camera in api.get_cameras(my_device_serial)]
+    camera_ids = [c["id"] for c in cameras[:2]]  # first two cameras
+    result = await api.create_area(my_device_serial, "Front Gate", camera_ids)
+    new_group_id = result["group_id"]
+
+    # Update an existing area (rename and/or change cameras)
+    await api.update_area(my_device_serial, my_group_id, "New Name", camera_ids)
+
+    # Arm / disarm an area
+    await api.arm_area(my_device_serial, my_group_id)           # mode=1
+    await api.arm_area_silent(my_device_serial, my_group_id)    # mode=2 (no beep)
+    await api.disarm_area(my_device_serial, my_group_id)        # mode=0
+
+    # Delete an area
+    await api.delete_area(my_device_serial, my_group_id)
 ```
 
 If you are new to `async` Python, you simply need to wrap your code in a construction like this:
