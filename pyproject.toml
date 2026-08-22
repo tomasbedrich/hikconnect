@@ -46,12 +46,10 @@ pydocstyle = "^6.3.0"
 pylint = "^3.3.5"
 
 # Testing
-pytest = "^8.3.0"
+pytest = "^9.0.3"
 pytest-cov = "^6.0.0"
-pytest-describe = "^2.2.0"
-pytest-expecter = "^3.0"
 pytest-random = "^0.02"
-pytest-asyncio = "^0.24.0"
+pytest-asyncio = "^1.4.0"
 pytest-dotenv = "^0.5.2"
 aioresponses-ng = "^0.8.2"
 
