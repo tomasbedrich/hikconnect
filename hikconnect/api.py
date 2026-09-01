@@ -572,19 +572,36 @@ class HikConnect:
         )
 
     async def get_call_status(self, device_serial: str):
-        async with self.client.get(
+        session_id = self.client.headers.get("sessionId")
+        url = (
             f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/status"
-        ) as res:
-            res_json = await res.json()
+            f"?sessionId={session_id}"
+            f"&clientType=55"
+            f"&lang=en-US"
+            f"&featureCode={_HikConnectClient.FEATURE_CODE}"
+        )
+
+        async with ClientSession() as raw:
+            async with raw.get(
+                    url
+            ) as res:
+                res_json = await res.json()
+
         log.debug("Got call status response '%s'", res_json)
         log.info("Got call status for device '%s'", device_serial)
-        if res_json["meta"]["code"] == 2003:
+
+        meta = res_json.get("meta") or {}
+        code = meta.get("code")
+        if code in (2003, 2009):
             raise DeviceOffline()
+        if code != 200 or "data" not in res_json:
+            raise DeviceOffline()
+
         data = json.loads(res_json["data"])
         try:
             status = self.CALL_STATUS_MAPPING[data["callStatus"]]
         except KeyError:
-            log.warning("Unknown call status: %s", data["callStatus"])
+            log.warning("Unknown call status: %s", data.get("callStatus"))
             status = "unknown"
 
         info = {}
