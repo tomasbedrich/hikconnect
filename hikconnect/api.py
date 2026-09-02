@@ -38,6 +38,15 @@ class _HikConnectClient(ClientSession):
         finally:
             self.headers["sessionId"] = session_id
 
+    @contextmanager
+    def without_auth_headers(self):
+        keys = ("sessionId", "clientType", "lang", "featureCode")
+        saved = {k: self.headers.pop(k) for k in keys if k in self.headers}
+        try:
+            yield self
+        finally:
+            self.headers.update(saved)
+
 
 class HikConnect:
     # pylint: disable=too-many-public-methods
@@ -72,7 +81,7 @@ class HikConnect:
             # "imageCode": "",  # required when CAPTCHA is presented - plaintext captcha input
         }
         async with self.client.post(
-            f"{self.BASE_URL}/v3/users/login/v2", data=data
+                f"{self.BASE_URL}/v3/users/login/v2", data=data
         ) as res:
             res_json = await res.json()
         log.debug("Got login response '%s'", res_json)
@@ -116,7 +125,7 @@ class HikConnect:
         }
         with self.client.without_session_id() as client:
             async with client.put(
-                f"{self.BASE_URL}/v3/apigateway/login", data=data
+                    f"{self.BASE_URL}/v3/apigateway/login", data=data
             ) as res:
                 res_json = await res.json()
         log.debug("Got refresh login response '%s'", res_json)
@@ -155,7 +164,7 @@ class HikConnect:
         limit, offset, has_next_page = 50, 0, True
         while has_next_page:
             async with self.client.get(
-                f"{self.BASE_URL}/v3/userdevices/v1/devices/pagelist?groupId=-1&limit={limit}&offset={offset}&filter=TIME_PLAN,CONNECTION,SWITCH,STATUS,STATUS_EXT,WIFI,NODISTURB,P2P,KMS,HIDDNS"
+                    f"{self.BASE_URL}/v3/userdevices/v1/devices/pagelist?groupId=-1&limit={limit}&offset={offset}&filter=TIME_PLAN,CONNECTION,SWITCH,STATUS,STATUS_EXT,WIFI,NODISTURB,P2P,KMS,HIDDNS"
             ) as res:
                 res_json = await res.json()
             log.debug("Got device list response '%s'", res_json)
@@ -228,7 +237,7 @@ class HikConnect:
     async def get_cameras(self, device_serial: str):
         """Get info about cameras connected to a device."""
         async with self.client.get(
-            f"{self.BASE_URL}/v3/userdevices/v1/cameras/info?deviceSerial={device_serial}"
+                f"{self.BASE_URL}/v3/userdevices/v1/cameras/info?deviceSerial={device_serial}"
         ) as res:
             res_json = await res.json()
         log.debug("Got camera list response '%s'", res_json)
@@ -256,7 +265,7 @@ class HikConnect:
         ``mode`` meanings (as observed): 0 = disarmed, 1 = armed, 2 = armed-silent.
         """
         async with self.client.get(
-            f"{self.BASE_URL}/v3/devices/group/{device_serial}/list"
+                f"{self.BASE_URL}/v3/devices/group/{device_serial}/list"
         ) as res:
             res_json = await res.json()
         log.debug("Got area list response '%s'", res_json)
@@ -281,7 +290,7 @@ class HikConnect:
         ``member_id`` corresponds to a camera ``id`` returned by ``get_cameras()``.
         """
         async with self.client.get(
-            f"{self.BASE_URL}/v3/devices/group/{device_serial}/{group_id}"
+                f"{self.BASE_URL}/v3/devices/group/{device_serial}/{group_id}"
         ) as res:
             res_json = await res.json()
         log.debug("Got area detail response '%s'", res_json)
@@ -298,7 +307,7 @@ class HikConnect:
         ]
 
     async def create_area(
-        self, device_serial: str, group_name: str, resource_ids: list
+            self, device_serial: str, group_name: str, resource_ids: list
     ):
         """Create a new area (group) on a device.
 
@@ -316,7 +325,7 @@ class HikConnect:
         """
         payload = {"groupName": group_name, "resourceIds": resource_ids}
         async with self.client.post(
-            f"{self.BASE_URL}/v3/devices/group/{device_serial}", json=payload
+                f"{self.BASE_URL}/v3/devices/group/{device_serial}", json=payload
         ) as res:
             res_json = await res.json()
         log.debug("Got create area response '%s'", res_json)
@@ -335,7 +344,7 @@ class HikConnect:
         }
 
     async def update_area(
-        self, device_serial: str, group_id: int, group_name: str, resource_ids: list
+            self, device_serial: str, group_id: int, group_name: str, resource_ids: list
     ):
         """Update an existing area (group) on a device.
 
@@ -370,13 +379,13 @@ class HikConnect:
 
     # pylint: disable=too-many-arguments
     async def edit_area_members(
-        self,
-        device_serial: str,
-        group_id: int,
-        *,
-        add_ids: list | None = None,
-        remove_ids: list | None = None,
-        group_name: str | None = None,
+            self,
+            device_serial: str,
+            group_id: int,
+            *,
+            add_ids: list | None = None,
+            remove_ids: list | None = None,
+            group_name: str | None = None,
     ) -> dict:
         """Add and/or remove members from an area, auto-deleting if it becomes empty.
 
@@ -473,7 +482,7 @@ class HikConnect:
             group_id: ID of the area to delete (from ``get_areas()``).
         """
         async with self.client.delete(
-            f"{self.BASE_URL}/v3/devices/group/{device_serial}/{group_id}"
+                f"{self.BASE_URL}/v3/devices/group/{device_serial}/{group_id}"
         ) as res:
             res_json = await res.json()
         log.debug("Got delete area response '%s'", res_json)
@@ -497,8 +506,8 @@ class HikConnect:
         """
         payload = {"groupId": group_id, "mode": mode}
         async with self.client.post(
-            f"{self.BASE_URL}/v3/devices/group/{device_serial}/switchDefenceMode",
-            json=payload,
+                f"{self.BASE_URL}/v3/devices/group/{device_serial}/switchDefenceMode",
+                json=payload,
         ) as res:
             res_json = await res.json()
         log.debug("Got set defence mode response '%s'", res_json)
@@ -549,7 +558,7 @@ class HikConnect:
     # ------------------------------------------------------------------
 
     async def unlock(
-        self, device_serial: str, channel_number: int, lock_index: int = 0
+            self, device_serial: str, channel_number: int, lock_index: int = 0
     ):
         """
         Send unlock request.
@@ -560,7 +569,7 @@ class HikConnect:
         you can specify `lock_index` parameter to control which lock to open. The `lock_index` starts with zero!
         """
         async with self.client.put(
-            f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/{channel_number}/remote/unlock?srcId=1&lockId={lock_index}&userType=0"
+                f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/{channel_number}/remote/unlock?srcId=1&lockId={lock_index}&userType=0"
         ) as res:
             res_json = await res.json()
         log.debug("Got unlock response '%s'", res_json)
@@ -573,17 +582,15 @@ class HikConnect:
 
     async def get_call_status(self, device_serial: str):
         session_id = self.client.headers.get("sessionId")
-        url = (
-            f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/status"
-            f"?sessionId={session_id}"
-            f"&clientType=55"
-            f"&lang=en-US"
-            f"&featureCode={_HikConnectClient.FEATURE_CODE}"
-        )
-
-        async with ClientSession() as raw:
-            async with raw.get(
-                    url
+        with self.client.without_auth_headers() as client:
+            async with client.get(
+                    f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/status",
+                    params={
+                        "sessionId": session_id,
+                        "clientType": "55",
+                        "lang": "en-US",
+                        "featureCode": _HikConnectClient.FEATURE_CODE,
+                    },
             ) as res:
                 res_json = await res.json()
 
@@ -609,8 +616,6 @@ class HikConnect:
             try:
                 info[out_key] = data["callerInfo"][in_key]
             except KeyError:
-                # normally we would log warning, but it seems to be pretty common situation:
-                # https://github.com/tomasbedrich/home-assistant-hikconnect/issues/4#issuecomment-1022526060
                 log.debug("Missing caller info key: %s", in_key)
 
         return {
@@ -625,7 +630,7 @@ class HikConnect:
         The `device_serial` parameter can be obtained from `get_devices()` and/or `get_cameras()`.
         """
         async with self.client.put(
-            f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/operation?cmdId=2"
+                f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/operation?cmdId=2"
         ) as res:
             res_json = await res.json()
         log.debug("Got answer_call response '%s'", res_json)
@@ -638,7 +643,7 @@ class HikConnect:
         The `device_serial` parameter can be obtained from `get_devices()` and/or `get_cameras()`.
         """
         async with self.client.put(
-            f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/operation?cmdId=3"
+                f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/operation?cmdId=3"
         ) as res:
             res_json = await res.json()
         log.debug("Got cancel_call response '%s'", res_json)
@@ -651,7 +656,7 @@ class HikConnect:
         The `device_serial` parameter can be obtained from `get_devices()` and/or `get_cameras()`.
         """
         async with self.client.put(
-            f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/operation?cmdId=5"
+                f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/operation?cmdId=5"
         ) as res:
             res_json = await res.json()
         log.debug("Got hangup_call response '%s'", res_json)
