@@ -584,13 +584,13 @@ class HikConnect:
         session_id = self.client.headers.get("sessionId")
         with self.client.without_auth_headers() as client:
             async with client.get(
-                    f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/status",
-                    params={
-                        "sessionId": session_id,
-                        "clientType": "55",
-                        "lang": "en-US",
-                        "featureCode": _HikConnectClient.FEATURE_CODE,
-                    },
+                f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/status",
+                params={
+                    "sessionId": session_id,
+                    "clientType": "55",
+                    "lang": "en-US",
+                    "featureCode": _HikConnectClient.FEATURE_CODE,
+                },
             ) as res:
                 res_json = await res.json()
 
