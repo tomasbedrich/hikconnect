@@ -7,7 +7,7 @@ from contextlib import contextmanager
 
 from aiohttp import ClientSession
 
-from hikconnect.exceptions import DeviceOffline, LoginError
+from hikconnect.exceptions import DeviceOffline, LoginError, UnlockError
 
 log = logging.getLogger(__name__)
 
@@ -567,12 +567,40 @@ class HikConnect:
         Pay special attention to `locks` item in `get_devices()` response. Not only it tells you which cameras
         has "unlock capability". Also if there is more than one lock connected to a door station,
         you can specify `lock_index` parameter to control which lock to open. The `lock_index` starts with zero!
+
+        Raises:
+            UnlockError: if the device rejected the unlock command. This has been observed to happen
+                while the outer response envelope still reports success (`meta.code` 200) - e.g. when
+                the physical device has a concurrent connectivity problem. Callers should not assume
+                the door was actually unlocked unless this call returns without raising.
         """
         async with self.client.put(
             f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/{channel_number}/remote/unlock?srcId=1&lockId={lock_index}&userType=0"
         ) as res:
             res_json = await res.json()
         log.debug("Got unlock response '%s'", res_json)
+
+        meta = res_json.get("meta") or {}
+        if meta.get("code") != 200 or "data" not in res_json:
+            raise UnlockError(f"Unexpected unlock response: {res_json!r}")
+
+        try:
+            data = json.loads(res_json["data"])
+            rc = data["rc"]
+        except (TypeError, ValueError, KeyError) as exc:
+            raise UnlockError(
+                f"Malformed unlock response data: {res_json['data']!r}"
+            ) from exc
+
+        # Empirically, "rc" 1 means the command was actually relayed to and executed by the
+        # physical device. Other values (e.g. 14) have been observed together with concurrent
+        # "device network abnormal" (meta.code 2009) responses from get_call_status() for the
+        # same device, even though this unlock response's own "meta.code" still reported 200.
+        # The exact meaning of every "rc" value is not documented anywhere; treat anything but
+        # 1 as a failure until proven otherwise.
+        if rc != 1:
+            raise UnlockError(f"Device rejected unlock command: {data!r}")
+
         log.info(
             "Unlocked device '%s' channel '%d' lock_index '%d'",
             device_serial,

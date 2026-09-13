@@ -8,3 +8,7 @@ class LoginError(HikConnectError, ValueError):
 
 class DeviceOffline(HikConnectError):
     pass
+
+
+class UnlockError(HikConnectError):
+    pass

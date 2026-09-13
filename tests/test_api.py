@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 from aioresponses import aioresponses
 
-from hikconnect.api import HikConnect, LoginError
+from hikconnect.api import HikConnect, LoginError, UnlockError
 
 pytestmark = pytest.mark.asyncio
 
@@ -560,6 +560,90 @@ async def test_get_cameras(api, get_cameras_response):
                 "is_shown": 1,
             },
         ]
+
+
+# ---------------------------------------------------------------------------
+# unlock() tests
+# Real response shapes captured from live API (apiieu.hik-connect.com). The
+# outer "meta.code" reports 200 ("success") in both cases below - the only
+# difference is the "rc" value nested inside the "data" string. This was
+# observed while the device concurrently reported a connectivity problem via
+# get_call_status() (meta.code 2009), which unlock() has no way to see.
+# ---------------------------------------------------------------------------
+
+_UNLOCK_DEVICE_SERIAL = "D12345678"
+_UNLOCK_URL = (
+    f"https://api.hik-connect.com/v3/devconfig/v1/call/{_UNLOCK_DEVICE_SERIAL}"
+    "/1/remote/unlock?srcId=1&lockId=0&userType=0"
+)
+
+
+async def test_unlock_success(api):
+    with aioresponses() as mock:
+        mock.put(
+            _UNLOCK_URL,
+            payload={
+                "data": '{\t"apiId":\t2,\t"rc":\t1}',
+                "meta": {"code": 200, "message": "操作成功", "moreInfo": None},
+            },
+        )
+        # must not raise
+        await api.unlock(_UNLOCK_DEVICE_SERIAL, channel_number=1, lock_index=0)
+
+
+async def test_unlock_rejected_by_device(api):
+    """Device-level rejection (rc != 1) although the API envelope reports success."""
+    with aioresponses() as mock:
+        mock.put(
+            _UNLOCK_URL,
+            payload={
+                "data": '{\t"apiId":\t2,\t"rc":\t14}',
+                "meta": {"code": 200, "message": "操作成功", "moreInfo": None},
+            },
+        )
+        with pytest.raises(UnlockError):
+            await api.unlock(_UNLOCK_DEVICE_SERIAL, channel_number=1, lock_index=0)
+
+
+async def test_unlock_malformed_data(api):
+    """Non-JSON / non-object `data` is normalized to UnlockError, not a raw parse error."""
+    with aioresponses() as mock:
+        mock.put(
+            _UNLOCK_URL,
+            payload={
+                "data": "not json",
+                "meta": {"code": 200, "message": "操作成功", "moreInfo": None},
+            },
+        )
+        with pytest.raises(UnlockError):
+            await api.unlock(_UNLOCK_DEVICE_SERIAL, channel_number=1, lock_index=0)
+
+
+async def test_unlock_non_object_data(api):
+    """Valid JSON that isn't an object (e.g. a list) is also normalized to UnlockError."""
+    with aioresponses() as mock:
+        mock.put(
+            _UNLOCK_URL,
+            payload={
+                "data": "[1, 2, 3]",
+                "meta": {"code": 200, "message": "操作成功", "moreInfo": None},
+            },
+        )
+        with pytest.raises(UnlockError):
+            await api.unlock(_UNLOCK_DEVICE_SERIAL, channel_number=1, lock_index=0)
+
+
+async def test_unlock_error_envelope(api):
+    """API-level failure (non-200 meta.code) is also surfaced as UnlockError."""
+    with aioresponses() as mock:
+        mock.put(
+            _UNLOCK_URL,
+            payload={
+                "meta": {"code": 2009, "message": "设备网络异常", "moreInfo": None}
+            },
+        )
+        with pytest.raises(UnlockError):
+            await api.unlock(_UNLOCK_DEVICE_SERIAL, channel_number=1, lock_index=0)
 
 
 # ---------------------------------------------------------------------------
