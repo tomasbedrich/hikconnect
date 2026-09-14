@@ -38,16 +38,6 @@ class _HikConnectClient(ClientSession):
         finally:
             self.headers["sessionId"] = session_id
 
-    @contextmanager
-    def without_auth_headers(self):
-        keys = ("sessionId", "clientType", "lang", "featureCode")
-        saved = {k: self.headers.pop(k) for k in keys if k in self.headers}
-        try:
-            yield self
-        finally:
-            self.headers.update(saved)
-
-
 class HikConnect:
     # pylint: disable=too-many-public-methods
 
@@ -118,7 +108,11 @@ class HikConnect:
         # Without this, data calls to the global endpoint return 401 for regional accounts.
         login_area = res_json.get("loginArea") or {}
         regional_domain = login_area.get("apiDomain")
-        if regional_domain and f"https://{regional_domain}" != self.BASE_URL:
+        if (
+            self.BASE_URL == type(self).BASE_URL
+            and regional_domain
+            and f"https://{regional_domain}" != self.BASE_URL
+        ):
             log.debug(
                 "Switching API domain from '%s' to regional '%s' (loginArea in code-200 response)",
                 self.BASE_URL,
@@ -623,7 +617,10 @@ class HikConnect:
 
     async def get_call_status(self, device_serial: str):
         session_id = self.client.headers.get("sessionId")
-        with self.client.without_auth_headers() as client:
+        # This endpoint requires authentication in query parameters and rejects
+        # the usual headers. Do not mutate the shared client: Home Assistant
+        # polls call status concurrently with authenticated device requests.
+        async with ClientSession(raise_for_status=True) as client:
             async with client.get(
                 f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/status",
                 params={
