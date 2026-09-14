@@ -101,7 +101,7 @@ class HikConnect:
             # https://github.com/tomasbedrich/home-assistant-hikconnect/issues/16
             new_api_domain = res_json["loginArea"]["apiDomain"]
             self.BASE_URL = f"https://{new_api_domain}"
-            log.debug("Switching API domain to '%s'", self.BASE_URL)
+            log.debug("Switching API domain to '%s' (code 1100)", self.BASE_URL)
             return await self.login(username, password)
 
         try:
@@ -112,6 +112,19 @@ class HikConnect:
             refresh_session_id = res_json["loginSession"]["rfSessionId"]
         except KeyError as e:  # pragma: no cover
             raise LoginError("Unable to parse refresh_session_id from response.") from e
+
+        # The server may return a regional API domain even with a code-200 response.
+        # Always switch to it so that all subsequent calls go to the correct endpoint.
+        # Without this, data calls to the global endpoint return 401 for regional accounts.
+        login_area = res_json.get("loginArea") or {}
+        regional_domain = login_area.get("apiDomain")
+        if regional_domain and f"https://{regional_domain}" != self.BASE_URL:
+            log.debug(
+                "Switching API domain from '%s' to regional '%s' (loginArea in code-200 response)",
+                self.BASE_URL,
+                regional_domain,
+            )
+            self.BASE_URL = f"https://{regional_domain}"
 
         self._handle_login_response(session_id, refresh_session_id)
 
