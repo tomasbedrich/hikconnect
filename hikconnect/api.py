@@ -38,6 +38,7 @@ class _HikConnectClient(ClientSession):
         finally:
             self.headers["sessionId"] = session_id
 
+
 class HikConnect:
     # pylint: disable=too-many-public-methods
 
@@ -617,6 +618,9 @@ class HikConnect:
 
     async def get_call_status(self, device_serial: str):
         session_id = self.client.headers.get("sessionId")
+        if session_id is None:
+            raise DeviceOffline()
+
         # This endpoint requires authentication in query parameters and rejects
         # the usual headers. Do not mutate the shared client: Home Assistant
         # polls call status concurrently with authenticated device requests.
