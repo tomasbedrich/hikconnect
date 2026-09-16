@@ -38,15 +38,6 @@ class _HikConnectClient(ClientSession):
         finally:
             self.headers["sessionId"] = session_id
 
-    @contextmanager
-    def without_auth_headers(self):
-        keys = ("sessionId", "clientType", "lang", "featureCode")
-        saved = {k: self.headers.pop(k) for k in keys if k in self.headers}
-        try:
-            yield self
-        finally:
-            self.headers.update(saved)
-
 
 class HikConnect:
     # pylint: disable=too-many-public-methods
@@ -72,6 +63,7 @@ class HikConnect:
         self._refresh_session_id = None
         self.login_valid_until = None
         self.client = _HikConnectClient()
+        self._call_status_client = ClientSession(raise_for_status=True)
 
     async def login(self, username: str, password: str):
         """Login to HikConnect and save state for use by other methods."""
@@ -101,7 +93,7 @@ class HikConnect:
             # https://github.com/tomasbedrich/home-assistant-hikconnect/issues/16
             new_api_domain = res_json["loginArea"]["apiDomain"]
             self.BASE_URL = f"https://{new_api_domain}"
-            log.debug("Switching API domain to '%s'", self.BASE_URL)
+            log.debug("Switching API domain to '%s' (code 1100)", self.BASE_URL)
             return await self.login(username, password)
 
         try:
@@ -112,6 +104,23 @@ class HikConnect:
             refresh_session_id = res_json["loginSession"]["rfSessionId"]
         except KeyError as e:  # pragma: no cover
             raise LoginError("Unable to parse refresh_session_id from response.") from e
+
+        # The server may return a regional API domain even with a code-200 response.
+        # Always switch to it so that all subsequent calls go to the correct endpoint.
+        # Without this, data calls to the global endpoint return 401 for regional accounts.
+        login_area = res_json.get("loginArea") or {}
+        regional_domain = login_area.get("apiDomain")
+        if (
+            self.BASE_URL == type(self).BASE_URL
+            and regional_domain
+            and f"https://{regional_domain}" != self.BASE_URL
+        ):
+            log.debug(
+                "Switching API domain from '%s' to regional '%s' (loginArea in code-200 response)",
+                self.BASE_URL,
+                regional_domain,
+            )
+            self.BASE_URL = f"https://{regional_domain}"
 
         self._handle_login_response(session_id, refresh_session_id)
 
@@ -610,17 +619,22 @@ class HikConnect:
 
     async def get_call_status(self, device_serial: str):
         session_id = self.client.headers.get("sessionId")
-        with self.client.without_auth_headers() as client:
-            async with client.get(
-                f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/status",
-                params={
-                    "sessionId": session_id,
-                    "clientType": "55",
-                    "lang": "en-US",
-                    "featureCode": _HikConnectClient.FEATURE_CODE,
-                },
-            ) as res:
-                res_json = await res.json()
+        if session_id is None:
+            raise DeviceOffline()
+
+        # This endpoint requires authentication in query parameters and rejects
+        # the usual headers. Do not mutate the shared client: Home Assistant
+        # polls call status concurrently with authenticated device requests.
+        async with self._call_status_client.get(
+            f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/status",
+            params={
+                "sessionId": session_id,
+                "clientType": "55",
+                "lang": "en-US",
+                "featureCode": _HikConnectClient.FEATURE_CODE,
+            },
+        ) as res:
+            res_json = await res.json()
 
         log.debug("Got call status response '%s'", res_json)
         log.info("Got call status for device '%s'", device_serial)
@@ -710,6 +724,8 @@ class HikConnect:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.client.__aexit__(exc_type, exc_val, exc_tb)
+        await self._call_status_client.close()
 
     async def close(self):
         await self.client.close()
+        await self._call_status_client.close()

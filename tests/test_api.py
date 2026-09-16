@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 from aioresponses import aioresponses
 
-from hikconnect.api import HikConnect, LoginError, UnlockError
+from hikconnect.api import DeviceOffline, HikConnect, LoginError, UnlockError
 
 pytestmark = pytest.mark.asyncio
 
@@ -145,6 +145,19 @@ class TestLogin:
             await api.login("username", "password")
             assert api.BASE_URL == "https://apiius.hik-connect.com"
             assert api.login_valid_until is not None
+
+    async def test_switch_api_domain_from_successful_login(
+        self, api, valid_login_response
+    ):
+        with aioresponses() as mock:
+            mock.post(
+                "https://api.hik-connect.com/v3/users/login/v2",
+                payload=valid_login_response,
+            )
+            await api.login("username", "password")
+
+        assert api.BASE_URL == "https://apiieu.hik-connect.com"
+        assert api.login_valid_until is not None
 
     async def test_refresh_login(self, api, refresh_login_response):
         with aioresponses() as mock:
@@ -560,6 +573,52 @@ async def test_get_cameras(api, get_cameras_response):
                 "is_shown": 1,
             },
         ]
+
+
+# ---------------------------------------------------------------------------
+# get_call_status()
+# ---------------------------------------------------------------------------
+
+
+async def test_get_call_status_uses_dedicated_headerless_session(api):
+    device_serial = "D12345678"
+    session_id = "session-id"
+    captured: dict[str, Any] = {}
+    api.client.set_session_id(session_id)
+
+    def _callback(_url, **kwargs):
+        assert api.client.headers["sessionId"] == session_id
+        assert api.client.headers["clientType"] == "55"
+        captured["headers"] = kwargs.get("headers", {})
+        captured["params"] = kwargs.get("params")
+
+    with aioresponses() as mock:
+        mock.get(
+            f"https://api.hik-connect.com/v3/devconfig/v1/call/{device_serial}/status"
+            "?clientType=55&featureCode=deadbeef&lang=en-US&sessionId=session-id",
+            payload={
+                "meta": {"code": 200},
+                "data": '{"callStatus": 1, "callerInfo": {}}',
+            },
+            callback=_callback,
+        )
+        result = await api.get_call_status(device_serial)
+
+    assert result["status"] == "idle"
+    assert captured["params"] == {
+        "sessionId": session_id,
+        "clientType": "55",
+        "lang": "en-US",
+        "featureCode": "deadbeef",
+    }
+    assert "sessionId" not in captured["headers"]
+    assert api.client.headers["sessionId"] == session_id
+    assert api.client.headers["clientType"] == "55"
+
+
+async def test_get_call_status_before_login_raises_device_offline(api):
+    with pytest.raises(DeviceOffline):
+        await api.get_call_status("D12345678")
 
 
 # ---------------------------------------------------------------------------
