@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 from aioresponses import aioresponses
 
-from hikconnect.api import HikConnect, LoginError, UnlockError
+from hikconnect.api import DeviceOffline, HikConnect, LoginError, UnlockError
 
 pytestmark = pytest.mark.asyncio
 
@@ -580,13 +580,15 @@ async def test_get_cameras(api, get_cameras_response):
 # ---------------------------------------------------------------------------
 
 
-async def test_get_call_status_uses_isolated_headerless_session(api):
+async def test_get_call_status_uses_dedicated_headerless_session(api):
     device_serial = "D12345678"
     session_id = "session-id"
     captured: dict[str, Any] = {}
     api.client.set_session_id(session_id)
 
     def _callback(_url, **kwargs):
+        assert api.client.headers["sessionId"] == session_id
+        assert api.client.headers["clientType"] == "55"
         captured["headers"] = kwargs.get("headers", {})
         captured["params"] = kwargs.get("params")
 
@@ -612,6 +614,11 @@ async def test_get_call_status_uses_isolated_headerless_session(api):
     assert "sessionId" not in captured["headers"]
     assert api.client.headers["sessionId"] == session_id
     assert api.client.headers["clientType"] == "55"
+
+
+async def test_get_call_status_before_login_raises_device_offline(api):
+    with pytest.raises(DeviceOffline):
+        await api.get_call_status("D12345678")
 
 
 # ---------------------------------------------------------------------------

@@ -63,6 +63,7 @@ class HikConnect:
         self._refresh_session_id = None
         self.login_valid_until = None
         self.client = _HikConnectClient()
+        self._call_status_client = ClientSession(raise_for_status=True)
 
     async def login(self, username: str, password: str):
         """Login to HikConnect and save state for use by other methods."""
@@ -624,17 +625,16 @@ class HikConnect:
         # This endpoint requires authentication in query parameters and rejects
         # the usual headers. Do not mutate the shared client: Home Assistant
         # polls call status concurrently with authenticated device requests.
-        async with ClientSession(raise_for_status=True) as client:
-            async with client.get(
-                f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/status",
-                params={
-                    "sessionId": session_id,
-                    "clientType": "55",
-                    "lang": "en-US",
-                    "featureCode": _HikConnectClient.FEATURE_CODE,
-                },
-            ) as res:
-                res_json = await res.json()
+        async with self._call_status_client.get(
+            f"{self.BASE_URL}/v3/devconfig/v1/call/{device_serial}/status",
+            params={
+                "sessionId": session_id,
+                "clientType": "55",
+                "lang": "en-US",
+                "featureCode": _HikConnectClient.FEATURE_CODE,
+            },
+        ) as res:
+            res_json = await res.json()
 
         log.debug("Got call status response '%s'", res_json)
         log.info("Got call status for device '%s'", device_serial)
@@ -724,6 +724,8 @@ class HikConnect:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.client.__aexit__(exc_type, exc_val, exc_tb)
+        await self._call_status_client.close()
 
     async def close(self):
         await self.client.close()
+        await self._call_status_client.close()
