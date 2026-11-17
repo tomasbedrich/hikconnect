@@ -3,8 +3,11 @@ from typing import Any
 
 import pytest
 from aioresponses import aioresponses
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from hikconnect.api import DeviceOffline, HikConnect, LoginError, UnlockError
+from hikconnect.exceptions import SnapshotError
 
 pytestmark = pytest.mark.asyncio
 
@@ -327,6 +330,7 @@ async def test_get_devices(api, get_devices_response):
         assert devices[0]["local_ip"] == "10.0.0.1"
         assert devices[0]["wan_ip"] == "81.81.81.81"
         assert devices[0]["is_online"] is True
+        assert devices[0]["is_encrypted"] is False
         assert devices[0]["wifi_signal"] == 75
         assert devices[0]["update_available"] is False
         # device without connectionInfos/statusInfos/wifiInfos entry
@@ -1296,3 +1300,71 @@ class TestEditAreaMembers:
         """ValueError if both add_ids and remove_ids are empty."""
         with pytest.raises(ValueError, match="add_ids.*remove_ids"):
             await api.edit_area_members(DEVICE_SERIAL, GROUP_ID)
+
+
+# ---------------------------------------------------------------------------
+# Snapshot
+# ---------------------------------------------------------------------------
+
+CAPTURE_URL = f"{BASE_URL}/v3/devices/security/capture?deviceSerial={DEVICE_SERIAL}&channelNo=1&isEncrypted={{}}"
+PIC_URL = "https://storage.example.com/capture/abc.jpg?sign=xyz"
+JPEG = b"\xff\xd8\xff\xe0" + b"jpeg-body" * 10
+
+
+def _encrypt_image(image, verification_code):
+    key = verification_code.encode().ljust(16, b"\0")
+    iv = b"01234567".ljust(16, b"\0")
+    padder = padding.PKCS7(128).padder()
+    encryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).encryptor()
+    ciphertext = encryptor.update(padder.update(image) + padder.finalize())
+    return b"hikencode".ljust(48, b"\0") + ciphertext + encryptor.finalize()
+
+
+def _capture_response(pic_url=PIC_URL):
+    return {"meta": {"code": 200}, "captureInfo": {"picUrl": pic_url}}
+
+
+class TestSnapshot:
+    async def test_plain(self, api):
+        api.client.set_session_id("secret-session")
+        with aioresponses() as mock:
+            mock.put(CAPTURE_URL.format(0), payload=_capture_response())
+            mock.get(
+                PIC_URL,
+                body=JPEG,
+                # session must not leak to the storage server
+                callback=lambda url, **kwargs: (
+                    None if "sessionId" not in api.client.headers else pytest.fail()
+                ),
+            )
+            assert await api.get_snapshot(DEVICE_SERIAL, 1) == JPEG
+        assert api.client.headers["sessionId"] == "secret-session"
+
+    async def test_encrypted(self, api):
+        with aioresponses() as mock:
+            mock.put(CAPTURE_URL.format(1), payload=_capture_response())
+            mock.get(PIC_URL, body=_encrypt_image(JPEG, "ABCDEF"))
+            image = await api.get_snapshot(
+                DEVICE_SERIAL, 1, is_encrypted=True, verification_code="ABCDEF"
+            )
+        assert image == JPEG
+
+    async def test_encrypted_without_code(self, api):
+        with aioresponses() as mock:
+            mock.put(CAPTURE_URL.format(1), payload=_capture_response())
+            mock.get(PIC_URL, body=_encrypt_image(JPEG, "ABCDEF"))
+            with pytest.raises(SnapshotError, match="verification code is required"):
+                await api.get_snapshot(DEVICE_SERIAL, 1, is_encrypted=True)
+
+    async def test_wrong_code(self):
+        with pytest.raises(SnapshotError, match="wrong verification code"):
+            HikConnect.decrypt_image(_encrypt_image(JPEG, "ABCDEF"), "XXXXXX")
+
+    async def test_capture_failed(self, api):
+        with aioresponses() as mock:
+            mock.put(
+                CAPTURE_URL.format(0),
+                payload={"meta": {"code": 2003, "message": "device offline"}},
+            )
+            with pytest.raises(SnapshotError, match="Unexpected capture response"):
+                await api.get_snapshot(DEVICE_SERIAL, 1)

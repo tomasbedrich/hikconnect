@@ -12,3 +12,7 @@ class DeviceOffline(HikConnectError):
 
 class UnlockError(HikConnectError):
     pass
+
+
+class SnapshotError(HikConnectError):
+    pass

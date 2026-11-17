@@ -6,8 +6,10 @@ from base64 import urlsafe_b64decode
 from contextlib import contextmanager
 
 from aiohttp import ClientSession
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from hikconnect.exceptions import DeviceOffline, LoginError, UnlockError
+from hikconnect.exceptions import DeviceOffline, LoginError, SnapshotError, UnlockError
 
 log = logging.getLogger(__name__)
 
@@ -215,6 +217,7 @@ class HikConnect:
             "is_online": is_online,
             "wifi_signal": wifi_signal,
             "update_available": cls._parse_update_available(status),
+            "is_encrypted": cls._parse_is_encrypted(status),
         }
 
     @staticmethod
@@ -231,6 +234,12 @@ class HikConnect:
     @staticmethod
     def _parse_update_available(status):
         value = status.get("upgradeAvailable")
+        return bool(value) if value is not None else None
+
+    @staticmethod
+    def _parse_is_encrypted(status):
+        # "Image and Video Encryption" with the device verification code
+        value = status.get("isEncrypt")
         return bool(value) if value is not None else None
 
     @staticmethod
@@ -616,6 +625,89 @@ class HikConnect:
             channel_number,
             lock_index,
         )
+
+    async def get_snapshot(
+        self,
+        device_serial: str,
+        channel_number: int,
+        is_encrypted: bool = False,
+        verification_code: str | None = None,
+    ) -> bytes:
+        """
+        Ask the device to capture a still image via the cloud and return it (JPEG bytes).
+
+        Use `is_encrypted` from `get_devices()`. Encrypted devices ("Image and Video Encryption")
+        return an encrypted image, which is decrypted with `verification_code` (printed on the
+        device label, usually 6 upper-case letters).
+
+        The device uploads the image on request, so this takes a few seconds. The Hik-Connect app
+        itself requests a new capture at most once per 10 minutes per channel.
+
+        Raises:
+            SnapshotError: if the capture failed or the image cannot be decrypted.
+        """
+        async with self.client.put(
+            f"{self.BASE_URL}/v3/devices/security/capture",
+            params={
+                "deviceSerial": device_serial,
+                "channelNo": channel_number,
+                "isEncrypted": int(is_encrypted),
+            },
+        ) as res:
+            res_json = await res.json()
+        log.debug("Got capture response '%s'", res_json)
+
+        meta = res_json.get("meta") or {}
+        pic_url = (res_json.get("captureInfo") or {}).get("picUrl")
+        if meta.get("code") != 200 or not pic_url:
+            raise SnapshotError(f"Unexpected capture response: {res_json!r}")
+
+        # picUrl points to a storage server, do not leak the session there
+        with self.client.without_session_id():
+            async with self.client.get(pic_url) as res:
+                image = await res.read()
+        log.info(
+            "Got snapshot of device '%s' channel '%d' (%d bytes)",
+            device_serial,
+            channel_number,
+            len(image),
+        )
+
+        if not image.startswith(self.ENCRYPTED_IMAGE_MAGIC):
+            return image
+        if not verification_code:
+            raise SnapshotError(
+                "Image is encrypted, device verification code is required."
+            )
+        return self.decrypt_image(image, verification_code)
+
+    ENCRYPTED_IMAGE_MAGIC = b"hikencode"
+
+    @staticmethod
+    def decrypt_image(image: bytes, verification_code: str) -> bytes:
+        """
+        Decrypt an image encrypted by the device ("Image and Video Encryption").
+
+        Layout: 48-byte header starting with b"hikencode", then AES-128-CBC ciphertext. Key is
+        the verification code zero-padded to 16 bytes, IV is "01234567" zero-padded to 16 bytes,
+        PKCS#7 padding. Reverse-engineered from the Hik-Connect app.
+        """
+        key = verification_code.encode("utf-8")[:16].ljust(16, b"\0")
+        iv = b"01234567".ljust(16, b"\0")
+        decryptor = Cipher(algorithms.AES(key), modes.CBC(iv)).decryptor()
+        unpadder = padding.PKCS7(128).unpadder()
+        try:
+            padded = decryptor.update(image[48:]) + decryptor.finalize()
+            decrypted = unpadder.update(padded) + unpadder.finalize()
+        except ValueError as exc:
+            raise SnapshotError(
+                "Unable to decrypt image, wrong verification code?"
+            ) from exc
+        if not decrypted.startswith(b"\xff\xd8"):
+            raise SnapshotError(
+                "Decrypted image is not a JPEG, wrong verification code?"
+            )
+        return decrypted
 
     async def get_call_status(self, device_serial: str):
         session_id = self.client.headers.get("sessionId")

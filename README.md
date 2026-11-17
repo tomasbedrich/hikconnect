@@ -51,6 +51,12 @@ async with HikConnect() as api:
     # Cancel call for device
     await api.cancel_call(my_device_serial)
 
+    # Capture a still image (JPEG bytes). Devices with "Image and Video Encryption"
+    # (devices[0]["is_encrypted"]) need the verification code from the device label.
+    jpeg = await api.get_snapshot(
+        my_device_serial, 1, is_encrypted=devices[0]["is_encrypted"], verification_code="ABCDEF"
+    )
+
     # call this periodically at least once per 30 mins!
     if api.is_refresh_login_needed():
         await api.refresh_login()
