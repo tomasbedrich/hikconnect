@@ -533,6 +533,31 @@ def _nal_types(au: bytes, codec: str) -> list[int]:
     return [au[start] >> shift & mask for start, end in _nal_spans(au) if start < end]
 
 
+def _params_valid(au: bytes, codec: str) -> bool | None:
+    """Check the bytes of the first VPS (H.265) or SPS (H.264) fixed by the spec, if any."""
+    for start, end in _nal_spans(au):
+        if codec == "h265" and end - start >= 6 and au[start] >> 1 & 0x3F == 32:
+            return (
+                au[start + 4 : start + 6] == b"\xff\xff"
+            )  # vps_reserved_0xffff_16bits
+        if codec == "h264" and end - start >= 2 and au[start] & 0x1F == 7:
+            return au[start + 1] in (
+                66,
+                77,
+                88,
+                100,
+                110,
+                122,
+                244,
+                44,
+                83,
+                86,
+                118,
+                128,
+            )
+    return None
+
+
 def _is_keyframe(au: bytes, codec: str) -> bool:
     headers = (au[start] for start, end in _nal_spans(au) if start < end)
     if codec == "h265":
@@ -702,6 +727,10 @@ class _Demuxer:  # pylint: disable=too-many-instance-attributes
         self._container = "rtp" if self._hint == "rtp" else None
         self._rtp_carries_ps: bool | None = None
         self.dropped = Counter[int]()
+        self.ext_profiles = Counter[int]()
+        self.seq_gaps = 0
+        self._last: tuple[int, int] | None = None  # sequence number and length
+        self._checked = False
         self._rtp = _RtpDepay(codec)
         self._ps = _PsDemux()
         self._key = key
@@ -731,6 +760,7 @@ class _Demuxer:  # pylint: disable=too-many-instance-attributes
         start = 12 + 4 * (packet[0] & 0x0F)
         if packet[0] & 0x10 and len(packet) >= start + 4:
             ext = start + 4 + 4 * int.from_bytes(packet[start + 2 : start + 4], "big")
+            self.ext_profiles[int.from_bytes(packet[start : start + 2], "big")] += 1
             # the device encryption descriptor (hik_rtp_parse_ext_info)
             if packet[start : start + 2] == b"\x40\x00":
                 enc_type = _encrypt_type(packet[start + 4 : ext])
@@ -742,9 +772,22 @@ class _Demuxer:  # pylint: disable=too-many-instance-attributes
         # ponytail: Hikvision sends video as payload type 96; audio and private data are dropped
         if end <= start or packet[1] & 0x7F != RTP_VIDEO_PAYLOAD_TYPE:
             if not self.dropped[packet[1] & 0x7F]:
-                log.debug("Dropping RTP payload type %d", packet[1] & 0x7F)
+                # a video RTP header inside the packet means misaligned packets
+                inner = re.search(rb"[\x80\x90]\x60|[\x80\x90]\xe0", packet[1:])
+                log.debug(
+                    "Dropping RTP payload type %d, %d B, video RTP header inside at %s, "
+                    "previous video packet %s",
+                    packet[1] & 0x7F,
+                    len(packet),
+                    inner and inner.start() + 1,
+                    self._last and f"{self._last[1]} B",
+                )
             self.dropped[packet[1] & 0x7F] += 1
             return
+        seq = int.from_bytes(packet[2:4], "big")
+        if self._last and seq != (self._last[0] + 1) & 0xFFFF:
+            self.seq_gaps += 1
+        self._last = seq, len(packet)
         payload = packet[start:end]
         if self._rtp_carries_ps is None:
             self._rtp_carries_ps = payload[:4] == PS_PACK
@@ -756,13 +799,24 @@ class _Demuxer:  # pylint: disable=too-many-instance-attributes
 
     def _decrypted(self, units: Iterator[_Unit], source) -> Iterator[_Unit]:
         """Decrypt units with the encryption type of `source`, read after each unit."""
-        for codec, pts, es in units:
+        for codec, pts, received in units:
+            es = received
             if source.enc_type and self._key:
-                es = _decrypt(es, codec == "h265", source.enc_type, self._key)
+                es = _decrypt(received, codec == "h265", source.enc_type, self._key)
             elif source.enc_type and not self._warned:
                 self._warned = True
                 log.warning(
                     "Video is encrypted by the device, set the verification code to decrypt it"
+                )
+            # tells undetected encryption and a wrong key or algorithm apart
+            # an encrypted H.264 NAL header hides the parameter set until decrypted
+            checks = _params_valid(received, codec), _params_valid(es, codec)
+            if not self._checked and checks != (None, None):
+                self._checked = True
+                log.debug(
+                    "Parameter set valid as received: %s, after decryption: %s",
+                    checks[0],
+                    checks[1] if es is not received else "not decrypted",
                 )
             yield codec, pts, es
 
@@ -859,9 +913,10 @@ async def _session(  # pylint: disable=too-many-locals
                     units += 1
                     if units <= DEBUG_UNITS:
                         log.debug(
-                            "Access unit %d: %s, %d B, NAL types %s",
+                            "Access unit %d: %s, timestamp %s, %d B, NAL types %s",
                             units,
                             unit[0],
+                            unit[1],
                             len(unit[2]),
                             _nal_types(unit[2], unit[0]),
                         )
@@ -880,12 +935,15 @@ async def _session(  # pylint: disable=too-many-locals
     finally:
         log.info(
             "Stream connection closed after %.0f s, %d access units, frames by channel %s, "
-            "dropped RTP packets %d, most common payload types %s",
+            "dropped RTP packets %d, most common payload types %s, RTP sequence gaps %d, "
+            "RTP extension profiles %s",
             time.monotonic() - started,
             units,
             {f"{k:#x}": v for k, v in frames_by_channel.items()},
             demuxer.dropped.total(),
             demuxer.dropped.most_common(3),
+            demuxer.seq_gaps,
+            {f"{k:#x}": v for k, v in demuxer.ext_profiles.items()},
         )
         keepalive.cancel()
         with suppress(Exception):
@@ -907,6 +965,7 @@ async def live(
     key = (
         verification_code.encode()[:16].ljust(32, b"\0") if verification_code else None
     )
+    log.debug("Live stream '%s', verification code set: %s", name, bool(key))
     pts = _make_clock()
     failures = 0
     while True:
