@@ -17,6 +17,7 @@ import re
 import struct
 import time
 import zlib
+from collections import Counter
 from contextlib import aclosing, suppress
 from functools import lru_cache
 from typing import AsyncGenerator, Awaitable, Callable, Iterator, NamedTuple
@@ -37,6 +38,8 @@ STREAM_TIMEOUT = 20
 MAX_ATTEMPTS = 3
 BACKOFF = 1
 
+# number of first access units described in debug logs
+DEBUG_UNITS = 10
 MSG_STOP_REQ = 0x130
 MSG_KEEPALIVE_REQ = 0x132
 MSG_KEEPALIVE_RSP = 0x133
@@ -137,6 +140,18 @@ def _stream_info_req(url: str, vtm_stream_key: bytes = b"") -> bytes:
     return (
         body + _pb_str(3, CLIENT_VERSION) + _pb_int(4, 0) + _pb_str(6, CLIENT_VERSION)
     )
+
+
+def _describe(rsp: dict[int, list]) -> str:
+    """Response summary for debug logs, without tokens and keys."""
+    text = f"result={_result(rsp)}, fields={sorted(rsp)}"
+    head = base64.b64decode(rsp.get(3, [b""])[0] + b"==")
+    if head[:4] == b"IMKH" and len(head) >= 14:
+        system, video, audio = struct.unpack("<HHH", head[8:14])
+        text += (
+            f", media head system/video/audio format={system:#x}/{video:#x}/{audio:#x}"
+        )
+    return text
 
 
 def _result(rsp: dict[int, list]) -> int:
@@ -294,6 +309,7 @@ async def _negotiate(
         (target.host, target.port), peer_key, _stream_info_req(url)
     )
     connection.close()
+    log.debug("VTM response: %s", _describe(rsp))
     if _result(rsp) not in (0, RESULT_REDIRECT) or 7 not in rsp:
         raise _Lost(f"VTM refused the stream with result {_result(rsp)}")
     connection, rsp = await _request(
@@ -301,6 +317,7 @@ async def _negotiate(
         peer_key,
         _stream_info_req(url, rsp.get(5, [b""])[0]),
     )
+    log.debug("VTDU response: %s", _describe(rsp))
     if _result(rsp) != 0:
         connection.close()
         raise _Lost(f"VTDU refused the stream with result {_result(rsp)}")
@@ -314,6 +331,13 @@ async def _open(target: StreamTarget) -> tuple[_Connection, dict[int, list]]:
     error: Exception = _Lost("no stream token available")
     for url, peer_key in zip(target.urls, peer_keys):
         mode = "ECDH" if peer_key else "plain"
+        log.debug(
+            "Opening %s stream connection via VTM %s:%d, url parameters %s",
+            mode,
+            target.host,
+            target.port,
+            re.findall(r"[?&]([^=&]+)=", url),
+        )
         try:
             async with asyncio.timeout(CONNECT_TIMEOUT):
                 connection, rsp = await _negotiate(
@@ -498,6 +522,11 @@ def _decrypt(au: bytes, hevc: bool, enc_type: int, key: bytes) -> bytes:
 # --------------------------------------------------------------------------- demux
 
 
+def _nal_types(au: bytes, codec: str) -> list[int]:
+    shift, mask = (1, 0x3F) if codec == "h265" else (0, 0x1F)
+    return [au[start] >> shift & mask for start, end in _nal_spans(au) if start < end]
+
+
 def _is_keyframe(au: bytes, codec: str) -> bool:
     headers = (au[start] for start, end in _nal_spans(au) if start < end)
     if codec == "h265":
@@ -516,7 +545,7 @@ def _parse_stream_head(stream_head: bytes) -> tuple[str | None, str | None]:
     system_format, video_format = struct.unpack("<HH", head[8:12])
     return (
         {2: "ps", 4: "rtp"}.get(system_format),
-        {0x100: "h264", 5: "h265"}.get(video_format),
+        {1: "h264", 0x100: "h264", 5: "h265"}.get(video_format),
     )
 
 
@@ -672,6 +701,7 @@ class _Demuxer:
         self._hint, codec = _parse_stream_head(stream_head)
         self._container = "rtp" if self._hint == "rtp" else None
         self._rtp_carries_ps: bool | None = None
+        self._dropped: set[int] = set()
         self._rtp = _RtpDepay(codec)
         self._ps = _PsDemux(key)
 
@@ -701,6 +731,9 @@ class _Demuxer:
         end = len(packet) - (packet[-1] if packet[0] & 0x20 else 0)
         # ponytail: Hikvision sends video as payload type 96; audio and private data are dropped
         if end <= start or packet[1] & 0x7F != RTP_VIDEO_PAYLOAD_TYPE:
+            if packet[1] & 0x7F not in self._dropped:
+                self._dropped.add(packet[1] & 0x7F)
+                log.debug("Dropping RTP payload type %d", packet[1] & 0x7F)
             return
         payload = packet[start:end]
         if self._rtp_carries_ps is None:
@@ -765,7 +798,7 @@ def _decrypt_media(
     return bytes([head[0] & 0xDF]) + head[1:] + data if head else data
 
 
-async def _session(
+async def _session(  # pylint: disable=too-many-locals
     target: StreamTarget, key: bytes | None
 ) -> AsyncGenerator[_Unit, None]:
     """Open one stream connection and yield access units until it dies."""
@@ -776,7 +809,9 @@ async def _session(
     # the stream has its own ECDH session, opened by the server with our connection key
     envelope = connection.envelope and _Envelope(connection.envelope.private_key)
     demuxer = _Demuxer(rsp.get(3, [b""])[0], key)
-    seen = dict.fromkeys(("video data", "keepalive response"), time.monotonic())
+    started, units, frames_by_channel = time.monotonic(), 0, Counter[int]()
+    seen = dict.fromkeys(("video data", "keepalive response"), started)
+    unknown: set[tuple[int, int]] = set()
     try:
         while True:
             stale = [
@@ -789,15 +824,41 @@ async def _session(
                     channel, code, body = await connection.recv()
             except TimeoutError:
                 continue
+            frames_by_channel[channel] += 1
             packet = _decrypt_media(envelope, channel, body)
             if packet:
+                if seen["video data"] == started:
+                    log.debug("First media packet: %s", packet[:16].hex(" "))
                 seen["video data"] = time.monotonic()
                 for unit in demuxer.feed(packet):
+                    units += 1
+                    if units <= DEBUG_UNITS:
+                        log.debug(
+                            "Access unit %d: %s, %d B, NAL types %s",
+                            units,
+                            unit[0],
+                            len(unit[2]),
+                            _nal_types(unit[2], unit[0]),
+                        )
                     yield unit
             elif packet is None and code == MSG_KEEPALIVE_RSP:
                 seen["keepalive response"] = time.monotonic()
                 connection.check_keepalive(channel, body)
+            elif packet is None and (channel, code) not in unknown:
+                unknown.add((channel, code))
+                log.debug(
+                    "Ignoring frame channel=%#x code=%#x, %d B",
+                    channel,
+                    code,
+                    len(body),
+                )
     finally:
+        log.info(
+            "Stream connection closed after %.0f s, %d access units, frames by channel %s",
+            time.monotonic() - started,
+            units,
+            {f"{k:#x}": v for k, v in frames_by_channel.items()},
+        )
         keepalive.cancel()
         with suppress(Exception):
             connection.send(ssn, MSG_STOP_REQ)
