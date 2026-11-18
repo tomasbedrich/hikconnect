@@ -627,14 +627,12 @@ class _RtpDepay:
 class _PsDemux:
     """MPEG program stream to access units, one per pack."""
 
-    def __init__(self, key: bytes | None):
-        self._key = key
+    def __init__(self):
         self._buf = bytearray()
         self._es = bytearray()
         self._pts: int | None = None
         self._codec: str | None = None
-        self._enc_type = 0
-        self._warned = False
+        self.enc_type = 0
 
     def feed(self, data: bytes) -> Iterator[_Unit]:
         self._buf += data
@@ -684,36 +682,31 @@ class _PsDemux:
                 codec = PS_CODECS[body[pos]]
                 break
             pos += 4 + int.from_bytes(body[pos + 2 : pos + 4], "big")
-        if (codec, enc_type) != (self._codec, self._enc_type):
+        if (codec, enc_type) != (self._codec, self.enc_type):
             log.info("Stream codec: %s, device encryption type: %#x", codec, enc_type)
-        self._codec, self._enc_type = codec, enc_type
+        self._codec, self.enc_type = codec, enc_type
 
     def _flush(self) -> Iterator[_Unit]:
         es, pts = bytes(self._es), self._pts
         self._es.clear()
         self._pts = None
-        if not es or not self._codec:
-            return
-        if self._enc_type and self._key:
-            es = _decrypt(es, self._codec == "h265", self._enc_type, self._key)
-        elif self._enc_type and not self._warned:
-            self._warned = True
-            log.warning(
-                "Video is encrypted by the device, set the verification code to decrypt it"
-            )
-        yield self._codec, pts, es
+        if es and self._codec:
+            yield self._codec, pts, es
 
 
-class _Demuxer:
+class _Demuxer:  # pylint: disable=too-many-instance-attributes
     """Media packets of either container to access units."""
 
     def __init__(self, stream_head: bytes, key: bytes | None):
         self._hint, codec = _parse_stream_head(stream_head)
         self._container = "rtp" if self._hint == "rtp" else None
         self._rtp_carries_ps: bool | None = None
-        self._dropped: set[int] = set()
+        self.dropped = Counter[int]()
         self._rtp = _RtpDepay(codec)
-        self._ps = _PsDemux(key)
+        self._ps = _PsDemux()
+        self._key = key
+        self.enc_type = 0
+        self._warned = False
 
     def feed(self, packet: bytes) -> Iterator[_Unit]:
         if self._container is None:
@@ -730,28 +723,48 @@ class _Demuxer:
                     self._hint,
                 )
         if self._container == "ps":
-            yield from self._ps.feed(packet)
+            yield from self._decrypted(self._ps.feed(packet), self._ps)
         elif self._container == "rtp" and len(packet) >= 12 and packet[0] >> 6 == 2:
             yield from self._feed_rtp(packet)
 
     def _feed_rtp(self, packet: bytes) -> Iterator[_Unit]:
         start = 12 + 4 * (packet[0] & 0x0F)
         if packet[0] & 0x10 and len(packet) >= start + 4:
-            start += 4 + 4 * int.from_bytes(packet[start + 2 : start + 4], "big")
+            ext = start + 4 + 4 * int.from_bytes(packet[start + 2 : start + 4], "big")
+            # the device encryption descriptor (hik_rtp_parse_ext_info)
+            if packet[start : start + 2] == b"\x40\x00":
+                enc_type = _encrypt_type(packet[start + 4 : ext])
+                if enc_type != self.enc_type:
+                    log.info("Device encryption type: %#x (RTP extension)", enc_type)
+                    self.enc_type = enc_type
+            start = ext
         end = len(packet) - (packet[-1] if packet[0] & 0x20 else 0)
         # ponytail: Hikvision sends video as payload type 96; audio and private data are dropped
         if end <= start or packet[1] & 0x7F != RTP_VIDEO_PAYLOAD_TYPE:
-            if packet[1] & 0x7F not in self._dropped:
-                self._dropped.add(packet[1] & 0x7F)
+            if not self.dropped[packet[1] & 0x7F]:
                 log.debug("Dropping RTP payload type %d", packet[1] & 0x7F)
+            self.dropped[packet[1] & 0x7F] += 1
             return
         payload = packet[start:end]
         if self._rtp_carries_ps is None:
             self._rtp_carries_ps = payload[:4] == PS_PACK
         if self._rtp_carries_ps:
-            yield from self._ps.feed(payload)
+            yield from self._decrypted(self._ps.feed(payload), self._ps)
         else:
-            yield from self._rtp.feed(int.from_bytes(packet[4:8], "big"), payload)
+            units = self._rtp.feed(int.from_bytes(packet[4:8], "big"), payload)
+            yield from self._decrypted(units, self)
+
+    def _decrypted(self, units: Iterator[_Unit], source) -> Iterator[_Unit]:
+        """Decrypt units with the encryption type of `source`, read after each unit."""
+        for codec, pts, es in units:
+            if source.enc_type and self._key:
+                es = _decrypt(es, codec == "h265", source.enc_type, self._key)
+            elif source.enc_type and not self._warned:
+                self._warned = True
+                log.warning(
+                    "Video is encrypted by the device, set the verification code to decrypt it"
+                )
+            yield codec, pts, es
 
 
 # --------------------------------------------------------------------------- stream
@@ -866,10 +879,13 @@ async def _session(  # pylint: disable=too-many-locals
                 )
     finally:
         log.info(
-            "Stream connection closed after %.0f s, %d access units, frames by channel %s",
+            "Stream connection closed after %.0f s, %d access units, frames by channel %s, "
+            "dropped RTP packets %d, most common payload types %s",
             time.monotonic() - started,
             units,
             {f"{k:#x}": v for k, v in frames_by_channel.items()},
+            demuxer.dropped.total(),
+            demuxer.dropped.most_common(3),
         )
         keepalive.cancel()
         with suppress(Exception):

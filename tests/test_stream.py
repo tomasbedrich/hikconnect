@@ -404,6 +404,27 @@ async def test_ps_encrypted(monkeypatch, caplog, code):
         assert caplog.text.count("Video is encrypted by the device") == 1
 
 
+@pytest.mark.parametrize("code", [CODE, None])
+async def test_rtp_encrypted(monkeypatch, caplog, code):
+    monkeypatch.setattr(stream, "MAX_SKIPPED_FRAMES", 0)
+    # the descriptor is in an RTP header extension with profile 0x4000 (NVR-4-E-X, issue #6)
+    ext = bytes.fromhex("40000002 8006000101100001")
+    packets = [
+        bytes([0x90]) + rtp(nal, timestamp)[1:12] + ext + nal
+        for timestamp in (0, 3600, 7200)
+        for nal in (SPS_ENCRYPTED, IDR_ENCRYPTED)
+    ]
+    async with FakeCloud(packets, RTP_HEAD) as cloud:
+        frames = await collect(live(cloud, code=code), 2)
+    if code:
+        assert [(f.data, f.keyframe) for f in frames] == [
+            (SC + SPS + SC + IDR, True)
+        ] * 2
+    else:
+        assert [f.data for f in frames] == [SC + SPS_ENCRYPTED + SC + IDR_ENCRYPTED] * 2
+        assert caplog.text.count("Video is encrypted by the device") == 1
+
+
 async def test_error_after_failed_attempts():
     calls = []
     async with FakeCloud([]) as cloud:
@@ -520,7 +541,7 @@ def test_depay_h265():
 def test_ps_demux_bytewise():
     units = rtp_stream(2)[1]
     data = b"".join(ps_stream(units))
-    demux = stream._PsDemux(None)
+    demux = stream._PsDemux()
     res = [u for i in range(len(data)) for u in demux.feed(data[i : i + 1])]
     assert res == [("h264", 5000, units[0]), ("h264", 8600, units[1])]
 
