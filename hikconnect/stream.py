@@ -228,14 +228,19 @@ class _Envelope:
         return _chacha(session, seq, ciphertext)
 
 
+@lru_cache(maxsize=None)
+def _private_key():
+    """
+    One key pair for the whole process, like the app. The device wraps the stream key for the
+    public key it got with the VTM request, not for the one of the VTDU connection.
+    """
+    return ec.generate_private_key(ec.SECP256R1())
+
+
 class _Connection:
     def __init__(self, reader, writer, peer_key: tuple[bytes, int] | None):
         self._reader, self._writer = reader, writer
-        self.envelope = (
-            _Envelope(ec.generate_private_key(ec.SECP256R1()), *peer_key)
-            if peer_key
-            else None
-        )
+        self.envelope = _Envelope(_private_key(), *peer_key) if peer_key else None
 
     def send(self, body: bytes, code: int):
         if self.envelope:
@@ -747,7 +752,13 @@ def _decrypt_media(
     try:
         data = envelope.dec(body[len(head) :])
     except (ValueError, struct.error) as exc:
-        log.debug("Dropping stream package: %r", exc)
+        # a failing handshake means no video at all, data packages fail then by the thousands
+        level = (
+            logging.WARNING
+            if body[len(head) + 1 : len(head) + 2] == b"\x01"
+            else logging.DEBUG
+        )
+        log.log(level, "Dropping stream package: %r", exc)
         return b""
     if len(data) <= 1:  # the first package carries only the session key
         return b""

@@ -176,6 +176,7 @@ class FakeCloud:
     def __init__(self, packets, stream_head=RTP_HEAD, after="hold", private_key=None):
         self.packets, self.stream_head, self.after = packets, stream_head, after
         self.private_key = private_key
+        self.vtm_client_public = None
         self.keepalive_result = 0
         self.urls, self.keepalives, self.stops = [], 0, 0
         self.vtm: asyncio.Server = None  # type: ignore[assignment]
@@ -232,6 +233,7 @@ class FakeCloud:
     async def _vtm(self, reader, writer, state):
         code, req = await self._read(reader, state)
         assert code == 0x13B and 2 not in req
+        self.vtm_client_public = state.get("peer_public")
         port = self.vtdu.sockets[0].getsockname()[1]
         rsp = stream._pb_int(1, 5302) + stream._pb_str(5, "vtmkey")
         rsp += stream._pb_str(7, f"ysproto://127.0.0.1:{port}/live?dev=X&chn=1")
@@ -245,9 +247,10 @@ class FakeCloud:
         rsp += stream._pb_str(3, self.stream_head) + stream._pb_str(4, "ssn1")
         self._write(writer, state, rsp, 0x13C)
         if state:
-            # the stream has its own session, announced by a package without data
+            # the stream has its own session, announced by a package without data; the device
+            # wraps its key for the client key from the VTM request (NVR-4-E-X, issue #6)
             key, session = ec.generate_private_key(ec.SECP256R1()), os.urandom(32)
-            package = enc_req(key, state["peer_public"], session, b"")
+            package = enc_req(key, self.vtm_client_public, session, b"")
             writer.write(frame(package, 0x0B, 0x13C))
             for seq, packet in enumerate(self.packets):
                 writer.write(frame(enc_data(session, seq + 2, packet), 0x0B, 0x2C84))
