@@ -21,6 +21,7 @@ import zlib
 from collections import Counter
 from contextlib import aclosing, suppress
 from functools import lru_cache
+from itertools import chain
 from typing import AsyncGenerator, Awaitable, Callable, Iterator, NamedTuple
 
 import aiohttp
@@ -58,6 +59,8 @@ CHANNEL_MEDIA = 0x01
 CHANNEL_ECDH_MSG = 0x0A
 CHANNEL_ECDH_MEDIA = 0x0B
 CHANNEL_ECDH_RTP = 0x0C
+# the ECDH media channel carries the stream in chunks of at most this many bytes (issue #6)
+ECDH_MEDIA_CHUNK = 1200
 
 RTP_VIDEO_PAYLOAD_TYPE = 96
 PS_PACK = b"\x00\x00\x01\xba"
@@ -878,6 +881,42 @@ def _decrypt_media(
     return bytes([head[0] & 0xDF]) + head[1:] + data if head else data
 
 
+class _Joiner:
+    """
+    RTP packets from the chunks of the ECDH media channel: a 1376-byte packet comes as
+    1200 + 176 bytes. A full chunk is followed by the rest of its packet, unless the next chunk
+    starts with an RTP header of the same SSRC (the packet was exactly one chunk long).
+    """
+
+    def __init__(self):
+        self._buf = bytearray()
+        self._ssrc: bytes | None = None
+        self.joined = self.orphans = 0
+
+    def feed(self, chunk: bytes) -> Iterator[bytes]:
+        rtp = len(chunk) >= 12 and chunk[0] >> 6 == 2
+        if self._ssrc is None:
+            # a program stream is a byte stream, its demuxer joins the chunks itself
+            if chunk[:3] == b"\x00\x00\x01":
+                yield chunk
+                return
+            if rtp:
+                self._ssrc = chunk[8:12]
+        if rtp and chunk[8:12] == self._ssrc:
+            if self._buf:
+                yield bytes(self._buf)
+                self._buf.clear()
+        elif not self._buf:
+            self.orphans += 1  # the rest of a packet sent before the connection
+            return
+        else:
+            self.joined += 1
+        self._buf += chunk
+        if len(chunk) < ECDH_MEDIA_CHUNK:
+            yield bytes(self._buf)
+            self._buf.clear()
+
+
 async def _session(  # pylint: disable=too-many-locals
     target: StreamTarget, key: bytes | None
 ) -> AsyncGenerator[_Unit, None]:
@@ -888,7 +927,7 @@ async def _session(  # pylint: disable=too-many-locals
     keepalive.add_done_callback(lambda task: task.cancelled() or task.exception())
     # the stream has its own ECDH session, opened by the server with our connection key
     envelope = connection.envelope and _Envelope(connection.envelope.private_key)
-    demuxer = _Demuxer(rsp.get(3, [b""])[0], key)
+    demuxer, joiner = _Demuxer(rsp.get(3, [b""])[0], key), _Joiner()
     started, units, frames_by_channel = time.monotonic(), 0, Counter[int]()
     first_slices = Counter[bool | None]()
     seen = dict.fromkeys(("video data", "keepalive response"), started)
@@ -913,7 +952,10 @@ async def _session(  # pylint: disable=too-many-locals
                 if seen["video data"] == started:
                     log.debug("First media packet: %d B", len(packet))
                 seen["video data"] = time.monotonic()
-                for unit in demuxer.feed(packet):
+                packets = (
+                    joiner.feed(packet) if channel == CHANNEL_ECDH_MEDIA else [packet]
+                )
+                for unit in chain.from_iterable(map(demuxer.feed, packets)):
                     units += 1
                     # tells a wrong key or algorithm from right decryption
                     first_slice_valid = _first_slice_valid(unit[2], unit[0])
@@ -946,8 +988,8 @@ async def _session(  # pylint: disable=too-many-locals
         log.info(
             "Stream connection closed after %.0f s, %d access units, frames by channel %s, "
             "dropped RTP packets %d, most common payload types %s, video packets of other "
-            "SSRC %d, RTP sequence gaps %d, RTP extension profiles %s, encrypted access units %d, "
-            "first slice valid %s",
+            "SSRC %d, RTP sequence gaps %d, RTP extension profiles %s, joined media chunks %d, "
+            "orphan media chunks %d, encrypted access units %d, first slice valid %s",
             time.monotonic() - started,
             units,
             {f"{k:#x}": v for k, v in frames_by_channel.items()},
@@ -956,6 +998,8 @@ async def _session(  # pylint: disable=too-many-locals
             demuxer.foreign_ssrc,
             demuxer.seq_gaps,
             {f"{k:#x}": v for k, v in demuxer.ext_profiles.items()},
+            joiner.joined,
+            joiner.orphans,
             demuxer.rtp.encrypted,
             dict(first_slices),
         )

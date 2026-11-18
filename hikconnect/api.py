@@ -768,7 +768,13 @@ class HikConnect:
         # tokens are single-use: one for the ECDH attempt, one for the plain fallback
         async with self.client.post(
             f"{self.BASE_URL}/api/user/token/get",
-            data={"featureCode": _HikConnectClient.FEATURE_CODE, "count": 2},
+            # the app copies the session ID into form bodies (CommonParamInterceptor),
+            # some regional servers ignore the header here
+            data={
+                "sessionId": self.client.headers.get("sessionId", ""),
+                "featureCode": _HikConnectClient.FEATURE_CODE,
+                "count": 2,
+            },
         ) as res:
             res_json = await res.json(content_type=None)
         tokens = res_json.get("tokenArray") or []

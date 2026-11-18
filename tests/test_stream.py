@@ -646,3 +646,19 @@ def test_envelope():
     assert package[1] == 2 and dec(package, server_key, state) == b"again"
     with pytest.raises(ValueError, match="authentication failed"):
         envelope.dec(enc_data(os.urandom(32), 3, b"spoofed"))
+
+
+def test_ecdh_media_chunks_are_joined():
+    joiner = stream._Joiner()
+    long, exact, short = (
+        rtp(b"\x01" * (size - 12), 0) for size in (1376, stream.ECDH_MEDIA_CHUNK, 64)
+    )
+    chunks = [b"\xff" * 176, long[:1200], long[1200:], exact, short, exact, exact]
+    chunks += [(long * 2)[:1200], (long * 2)[1200:2400], (long * 2)[2400:]]
+    packets = [packet for chunk in chunks for packet in joiner.feed(chunk)]
+    assert packets == [long, exact, short, exact, exact, long * 2]
+    assert (joiner.joined, joiner.orphans) == (3, 1)
+    # a program stream passes through
+    assert list(stream._Joiner().feed(stream.PS_PACK + b"\0" * 1196)) == [
+        stream.PS_PACK + b"\0" * 1196
+    ]
