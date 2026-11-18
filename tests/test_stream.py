@@ -538,6 +538,39 @@ def test_depay_h265():
     assert stream._is_keyframe(units[0][2], "h265")
 
 
+def test_depay_decrypts_by_last_packet():
+    # the player decrypts the whole access unit with the type of its last packet (issue #6)
+    depay = stream._RtpDepay("h264", CODE.encode().ljust(32, b"\0"))
+    packets = [(1, SPS_ENCRYPTED, 0), (1, IDR_ENCRYPTED, 1), (2, IDR_ENCRYPTED, 1)]
+    packets += [(2, SPS, 0), (3, b"\x61xx", 0)]
+    units = [u for t, p, e in packets for u in depay.feed(t, p, e)]
+    assert units == [
+        ("h264", 1, SC + SPS + SC + IDR),
+        ("h264", 2, SC + IDR_ENCRYPTED + SC + SPS),
+    ]
+    assert depay.encrypted == 1
+
+
+def test_foreign_ssrc_is_dropped():
+    demuxer = stream._Demuxer(RTP_HEAD, None)
+    packets, units = rtp_stream(3)
+    foreign = struct.pack(">BBHII", 0x80, 96, 0, 99, 2) + b"\x61garbage"
+    res = [
+        u[2] for p in packets[:-1] + [foreign] + packets[-1:] for u in demuxer.feed(p)
+    ]
+    assert res == units[:2]
+    assert demuxer.foreign_ssrc == 1
+
+
+def test_first_slice_valid():
+    assert stream._first_slice_valid(SC + SPS + SC + b"\x65\x88xx", "h264")
+    assert not stream._first_slice_valid(SC + b"\x41\x08xx", "h264")
+    assert stream._first_slice_valid(
+        SC + b"\x40\x01vps" + SC + b"\x26\x01\xa0xx", "h265"
+    )
+    assert stream._first_slice_valid(SC + SPS, "h264") is None
+
+
 def test_ps_demux_bytewise():
     units = rtp_stream(2)[1]
     data = b"".join(ps_stream(units))

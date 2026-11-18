@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines
 """
 Live video from the Hik-Connect cloud relay.
 
@@ -533,28 +534,18 @@ def _nal_types(au: bytes, codec: str) -> list[int]:
     return [au[start] >> shift & mask for start, end in _nal_spans(au) if start < end]
 
 
-def _params_valid(au: bytes, codec: str) -> bool | None:
-    """Check the bytes of the first VPS (H.265) or SPS (H.264) fixed by the spec, if any."""
-    for start, end in _nal_spans(au):
-        if codec == "h265" and end - start >= 6 and au[start] >> 1 & 0x3F == 32:
-            return (
-                au[start + 4 : start + 6] == b"\xff\xff"
-            )  # vps_reserved_0xffff_16bits
-        if codec == "h264" and end - start >= 2 and au[start] & 0x1F == 7:
-            return au[start + 1] in (
-                66,
-                77,
-                88,
-                100,
-                110,
-                122,
-                244,
-                44,
-                83,
-                86,
-                118,
-                128,
-            )
+def _first_slice_valid(au: bytes, codec: str) -> bool | None:
+    """
+    Check the first bit of the first slice, 1 in the first slice of a picture
+    (first_slice_segment_in_pic_flag in H.265, first_mb_in_slice = 0 in H.264).
+    """
+    hevc = codec == "h265"
+    pos = au.find(b"\x00\x00\x01")
+    while 0 <= pos < len(au) - 6:
+        header = au[pos + 3]
+        if (header >> 1 & 0x3F) < 32 if hevc else header & 0x1F in (1, 5):
+            return bool(au[pos + 5 if hevc else pos + 4] & 0x80)
+        pos = au.find(b"\x00\x00\x01", pos + 3)
     return None
 
 
@@ -595,31 +586,43 @@ def _sniff_codec(payload: bytes) -> str | None:
 
 
 class _RtpDepay:
-    """RFC 6184 (H.264) / RFC 7798 (H.265) payloads to Annex-B access units."""
+    """
+    RFC 6184 (H.264) / RFC 7798 (H.265) payloads to Annex-B access units.
 
-    def __init__(self, codec: str | None):
+    The player decrypts a whole access unit with the encryption type of its last packet, the
+    type is reset for each packet (hik_rtp_parse_packet, IDMXRTPDemux::UpdatePayloadInfo).
+    """
+
+    def __init__(self, codec: str | None, key: bytes | None = None):
         # the player takes the codec from the media header (IDMXRTPDemux::InitDemux)
         self._codec = codec
-        self._sniffed = codec is not None
         if codec:
             log.info("Stream codec: %s (from stream head)", codec)
+        self._key = key
         self._timestamp: int | None = None
+        self._enc_type = 0
         self._au = bytearray()
+        self.encrypted = 0
 
-    def feed(self, timestamp: int, payload: bytes) -> Iterator[_Unit]:
-        if not self._sniffed:
-            codec = _sniff_codec(payload)
-            if codec:
-                log.info("Stream codec: %s (sniffed, stream head has none)", codec)
-                self._codec, self._sniffed = codec, True
+    def feed(
+        self, timestamp: int, payload: bytes, enc_type: int = 0
+    ) -> Iterator[_Unit]:
         if not self._codec:
-            return
+            self._codec = _sniff_codec(payload)
+            if not self._codec:
+                return
+            log.info("Stream codec: %s (sniffed, stream head has none)", self._codec)
         # ponytail: an access unit ends when the timestamp changes, which delays it by one
         # frame; use the RTP marker bit if latency matters
         if timestamp != self._timestamp and self._au:
-            yield self._codec, self._timestamp, bytes(self._au)
+            au = bytes(self._au)
+            if self._enc_type:
+                self.encrypted += 1
+            if self._enc_type and self._key:
+                au = _decrypt(au, self._codec == "h265", self._enc_type, self._key)
+            yield self._codec, self._timestamp, au
             self._au.clear()
-        self._timestamp = timestamp
+        self._timestamp, self._enc_type = timestamp, enc_type
         self._depay(payload, self._codec == "h265")
 
     def _depay(self, payload: bytes, hevc: bool):
@@ -729,12 +732,13 @@ class _Demuxer:  # pylint: disable=too-many-instance-attributes
         self.dropped = Counter[int]()
         self.ext_profiles = Counter[int]()
         self.seq_gaps = 0
+        self.foreign_ssrc = 0
+        self._ssrc: bytes | None = None
         self._last: tuple[int, int] | None = None  # sequence number and length
-        self._checked = False
-        self._rtp = _RtpDepay(codec)
+        self.rtp = _RtpDepay(codec, key)
         self._ps = _PsDemux()
         self._key = key
-        self.enc_type = 0
+        self._enc_type = 0
         self._warned = False
 
     def feed(self, packet: bytes) -> Iterator[_Unit]:
@@ -752,38 +756,44 @@ class _Demuxer:  # pylint: disable=too-many-instance-attributes
                     self._hint,
                 )
         if self._container == "ps":
-            yield from self._decrypted(self._ps.feed(packet), self._ps)
+            yield from self._decrypted(self._ps.feed(packet))
         elif self._container == "rtp" and len(packet) >= 12 and packet[0] >> 6 == 2:
             yield from self._feed_rtp(packet)
 
     def _feed_rtp(self, packet: bytes) -> Iterator[_Unit]:
-        start = 12 + 4 * (packet[0] & 0x0F)
+        start, enc_type, profile = 12 + 4 * (packet[0] & 0x0F), 0, None
         if packet[0] & 0x10 and len(packet) >= start + 4:
             ext = start + 4 + 4 * int.from_bytes(packet[start + 2 : start + 4], "big")
-            self.ext_profiles[int.from_bytes(packet[start : start + 2], "big")] += 1
+            profile = int.from_bytes(packet[start : start + 2], "big")
             # the device encryption descriptor (hik_rtp_parse_ext_info)
             if packet[start : start + 2] == b"\x40\x00":
                 enc_type = _encrypt_type(packet[start + 4 : ext])
-                if enc_type != self.enc_type:
-                    log.info("Device encryption type: %#x (RTP extension)", enc_type)
-                    self.enc_type = enc_type
             start = ext
         end = len(packet) - (packet[-1] if packet[0] & 0x20 else 0)
         # ponytail: Hikvision sends video as payload type 96; audio and private data are dropped
         if end <= start or packet[1] & 0x7F != RTP_VIDEO_PAYLOAD_TYPE:
             if not self.dropped[packet[1] & 0x7F]:
-                # a video RTP header inside the packet means misaligned packets
-                inner = re.search(rb"[\x80\x90]\x60|[\x80\x90]\xe0", packet[1:])
                 log.debug(
-                    "Dropping RTP payload type %d, %d B, video RTP header inside at %s, "
-                    "previous video packet %s",
+                    "Dropping RTP payload type %d, %d B, previous video packet %s",
                     packet[1] & 0x7F,
                     len(packet),
-                    inner and inner.start() + 1,
                     self._last and f"{self._last[1]} B",
                 )
             self.dropped[packet[1] & 0x7F] += 1
             return
+        # the player keeps a stream per payload type and SSRC (hik_rtp_search_es_index), the
+        # first one is the video
+        if self._ssrc is None:
+            self._ssrc = packet[8:12]
+        if packet[8:12] != self._ssrc:
+            self.foreign_ssrc += 1
+            return
+        if profile is not None:
+            self.ext_profiles[profile] += 1
+        if enc_type and not self._enc_type:
+            log.info("Device encryption type: %#x (RTP extension)", enc_type)
+            self._enc_type = enc_type
+            self._warn()
         seq = int.from_bytes(packet[2:4], "big")
         if self._last and seq != (self._last[0] + 1) & 0xFFFF:
             self.seq_gaps += 1
@@ -792,32 +802,25 @@ class _Demuxer:  # pylint: disable=too-many-instance-attributes
         if self._rtp_carries_ps is None:
             self._rtp_carries_ps = payload[:4] == PS_PACK
         if self._rtp_carries_ps:
-            yield from self._decrypted(self._ps.feed(payload), self._ps)
+            yield from self._decrypted(self._ps.feed(payload))
         else:
-            units = self._rtp.feed(int.from_bytes(packet[4:8], "big"), payload)
-            yield from self._decrypted(units, self)
+            ts = int.from_bytes(packet[4:8], "big")
+            yield from self.rtp.feed(ts, payload, enc_type)
 
-    def _decrypted(self, units: Iterator[_Unit], source) -> Iterator[_Unit]:
-        """Decrypt units with the encryption type of `source`, read after each unit."""
-        for codec, pts, received in units:
-            es = received
-            if source.enc_type and self._key:
-                es = _decrypt(received, codec == "h265", source.enc_type, self._key)
-            elif source.enc_type and not self._warned:
-                self._warned = True
-                log.warning(
-                    "Video is encrypted by the device, set the verification code to decrypt it"
-                )
-            # tells undetected encryption and a wrong key or algorithm apart
-            # an encrypted H.264 NAL header hides the parameter set until decrypted
-            checks = _params_valid(received, codec), _params_valid(es, codec)
-            if not self._checked and checks != (None, None):
-                self._checked = True
-                log.debug(
-                    "Parameter set valid as received: %s, after decryption: %s",
-                    checks[0],
-                    checks[1] if es is not received else "not decrypted",
-                )
+    def _warn(self):
+        if not self._key and not self._warned:
+            self._warned = True
+            log.warning(
+                "Video is encrypted by the device, set the verification code to decrypt it"
+            )
+
+    def _decrypted(self, units: Iterator[_Unit]) -> Iterator[_Unit]:
+        """Decrypt PS units with the encryption type of the stream, read after each unit."""
+        for codec, pts, es in units:
+            if self._ps.enc_type:
+                self._warn()
+            if self._ps.enc_type and self._key:
+                es = _decrypt(es, codec == "h265", self._ps.enc_type, self._key)
             yield codec, pts, es
 
 
@@ -887,6 +890,7 @@ async def _session(  # pylint: disable=too-many-locals
     envelope = connection.envelope and _Envelope(connection.envelope.private_key)
     demuxer = _Demuxer(rsp.get(3, [b""])[0], key)
     started, units, frames_by_channel = time.monotonic(), 0, Counter[int]()
+    first_slices = Counter[bool | None]()
     seen = dict.fromkeys(("video data", "keepalive response"), started)
     unknown: set[tuple[int, int]] = set()
     try:
@@ -907,18 +911,24 @@ async def _session(  # pylint: disable=too-many-locals
             packet = _decrypt_media(envelope, channel, body)
             if packet:
                 if seen["video data"] == started:
-                    log.debug("First media packet: %s", packet[:16].hex(" "))
+                    log.debug("First media packet: %d B", len(packet))
                 seen["video data"] = time.monotonic()
                 for unit in demuxer.feed(packet):
                     units += 1
+                    # tells a wrong key or algorithm from right decryption
+                    first_slice_valid = _first_slice_valid(unit[2], unit[0])
+                    first_slices[first_slice_valid] += 1
                     if units <= DEBUG_UNITS:
                         log.debug(
-                            "Access unit %d: %s, timestamp %s, %d B, NAL types %s",
+                            "Access unit %d: %s, timestamp %s, %d B, NAL types %s, "
+                            "first slice valid %s, encrypted access units so far %d",
                             units,
                             unit[0],
                             unit[1],
                             len(unit[2]),
                             _nal_types(unit[2], unit[0]),
+                            first_slice_valid,
+                            demuxer.rtp.encrypted,
                         )
                     yield unit
             elif packet is None and code == MSG_KEEPALIVE_RSP:
@@ -935,15 +945,19 @@ async def _session(  # pylint: disable=too-many-locals
     finally:
         log.info(
             "Stream connection closed after %.0f s, %d access units, frames by channel %s, "
-            "dropped RTP packets %d, most common payload types %s, RTP sequence gaps %d, "
-            "RTP extension profiles %s",
+            "dropped RTP packets %d, most common payload types %s, video packets of other "
+            "SSRC %d, RTP sequence gaps %d, RTP extension profiles %s, encrypted access units %d, "
+            "first slice valid %s",
             time.monotonic() - started,
             units,
             {f"{k:#x}": v for k, v in frames_by_channel.items()},
             demuxer.dropped.total(),
             demuxer.dropped.most_common(3),
+            demuxer.foreign_ssrc,
             demuxer.seq_gaps,
             {f"{k:#x}": v for k, v in demuxer.ext_profiles.items()},
+            demuxer.rtp.encrypted,
+            dict(first_slices),
         )
         keepalive.cancel()
         with suppress(Exception):
