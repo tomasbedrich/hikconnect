@@ -16,3 +16,7 @@ class UnlockError(HikConnectError):
 
 class SnapshotError(HikConnectError):
     pass
+
+
+class StreamError(HikConnectError):
+    pass

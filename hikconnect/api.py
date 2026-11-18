@@ -2,14 +2,25 @@ import datetime
 import hashlib
 import json
 import logging
-from base64 import urlsafe_b64decode
-from contextlib import contextmanager
+import time
+from base64 import b64decode, urlsafe_b64decode
+from contextlib import aclosing, contextmanager
+from functools import partial
+from typing import AsyncIterator
 
 from aiohttp import ClientSession
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from hikconnect.exceptions import DeviceOffline, LoginError, SnapshotError, UnlockError
+from hikconnect import stream
+from hikconnect.exceptions import (
+    DeviceOffline,
+    LoginError,
+    SnapshotError,
+    StreamError,
+    UnlockError,
+)
+from hikconnect.stream import Frame
 
 log = logging.getLogger(__name__)
 
@@ -708,6 +719,112 @@ class HikConnect:
                 "Decrypted image is not a JPEG, wrong verification code?"
             )
         return decrypted
+
+    async def live_stream(
+        self,
+        device_serial: str,
+        channel: int,
+        *,
+        main_stream: bool = True,
+        verification_code: str | None = None,
+    ) -> AsyncIterator[Frame]:
+        """
+        Yield live video frames (H.264/H.265 access units) relayed by the cloud.
+
+        Runs until the consumer stops iterating; reconnects when the stream dies (the cloud
+        cuts it after about 30 minutes), keeping `Frame.pts` continuous. `verification_code`
+        decrypts the video of devices with "Image and Video Encryption" enabled.
+
+        Raises:
+            StreamError: if the stream cannot be opened in several consecutive attempts.
+        """
+        get_target = partial(
+            self._get_stream_target, device_serial, channel, main_stream
+        )
+        name = f"{device_serial}/{channel}"
+        async with aclosing(stream.live(get_target, name, verification_code)) as frames:
+            async for frame in frames:
+                yield frame
+
+    async def _get_stream_target(
+        self, device_serial: str, channel: int, main_stream: bool
+    ) -> stream.StreamTarget:
+        vtm, public_key = await self._get_stream_servers(device_serial, channel)
+
+        async with self.client.get(
+            f"{self.BASE_URL}/v3/userdevices/v1/cameras/info?deviceSerial={device_serial}"
+        ) as res:
+            res_json = await res.json()
+        log.debug("Got camera list response '%s'", res_json)
+        biz = next(
+            (
+                camera.get("streamBizUrl")
+                for camera in res_json.get("cameraInfos") or []
+                if camera.get("channelNo") == channel
+            ),
+            None,
+        )
+
+        # tokens are single-use: one for the ECDH attempt, one for the plain fallback
+        async with self.client.post(
+            f"{self.BASE_URL}/api/user/token/get",
+            data={"featureCode": _HikConnectClient.FEATURE_CODE, "count": 2},
+        ) as res:
+            res_json = await res.json(content_type=None)
+        tokens = res_json.get("tokenArray") or []
+        log.debug("Got %d stream tokens", len(tokens))
+        if not tokens:
+            raise StreamError(f"Unable to get stream tokens: {res_json!r}")
+
+        host, port = vtm["domain"], int(vtm["port"])
+        urls = [
+            f"ysproto://{host}:{port}/live?dev={device_serial}&chn={channel}"
+            f"&stream={1 if main_stream else 2}&cln=55&isp=0&auth=1&ssn={token}"
+            f"{'&' + biz if biz else ''}&vip=0&timestamp={int(time.time() * 1000)}"
+            for token in tokens
+        ]
+        return stream.StreamTarget(
+            host,
+            port,
+            urls,
+            b64decode(public_key["key"]) if public_key.get("key") else None,
+            int(public_key.get("version") or 1),
+        )
+
+    async def _get_stream_servers(self, device_serial: str, channel: int):
+        """Return VTM server address and ECDH public key (may be empty) of a device."""
+        vtm, public_key, res_json = None, {}, {}  # type: dict | None, dict, dict
+        limit, offset = 50, 0
+        while not vtm and not public_key:
+            async with self.client.get(
+                f"{self.BASE_URL}/v3/userdevices/v1/devices/pagelist?groupId=-1&limit={limit}&offset={offset}&filter=VTM,TTS"
+            ) as res:
+                res_json = await res.json()
+            log.debug("Got stream server list response '%s'", res_json)
+            vtm = (res_json.get("VTM") or {}).get(device_serial)
+            tts = res_json.get("TTS") or res_json.get("ttsInfos") or {}
+            public_key = (tts.get(device_serial) or {}).get("publicKey") or {}
+            offset += limit
+            if not (res_json.get("page") or {}).get("hasNext"):
+                break
+
+        if not vtm:
+            async with self.client.get(
+                f"{self.BASE_URL}/v3/streaming/vtm/{device_serial}/{channel}"
+            ) as res:
+                res_json = await res.json()
+            log.debug("Got stream server response '%s'", res_json)
+            vtm = res_json.get("streamServerConfig")
+        if not vtm or not vtm.get("domain") or not vtm.get("port"):
+            raise StreamError(
+                f"Device '{device_serial}' has no cloud stream server: {res_json!r}"
+            )
+        log.info(
+            "Got stream server for device '%s', ECDH key: %s",
+            device_serial,
+            "yes" if public_key else "no",
+        )
+        return vtm, public_key
 
     async def get_call_status(self, device_serial: str):
         session_id = self.client.headers.get("sessionId")
