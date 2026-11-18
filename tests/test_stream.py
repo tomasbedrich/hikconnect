@@ -314,6 +314,7 @@ async def test_keepalive_and_stop(monkeypatch):
 @pytest.mark.parametrize("after", ["close", "silent", "keepalive error"])
 async def test_reconnect(monkeypatch, caplog, after):
     monkeypatch.setattr(stream, "STREAM_TIMEOUT", 0.2)
+    monkeypatch.setattr(stream, "VIDEO_STALL_TIMEOUT", 0.1)
     caplog.set_level(logging.INFO)
     packets, units = rtp_stream(4)
     async with FakeCloud(packets, after=after.split()[0]) as cloud:
@@ -325,7 +326,7 @@ async def test_reconnect(monkeypatch, caplog, after):
     assert [f.pts for f in frames] == [3600 * n for n in range(6)]
     assert [f.keyframe for f in frames] == [True, False, False] * 2
     assert len(cloud.urls) == 2
-    reason = {"close": "IncompleteReadError", "silent": "no video data for 0.2 s"}.get(
+    reason = {"close": "IncompleteReadError", "silent": "no video data for 0.1 s"}.get(
         after, "keepalive result 1"
     )
     assert f"Reconnecting live stream 'X/1': {reason}" in caplog.text.replace(

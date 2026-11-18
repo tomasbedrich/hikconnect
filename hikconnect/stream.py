@@ -35,6 +35,9 @@ CLIENT_VERSION = "v3.10.1.20260710"
 CONNECT_TIMEOUT = 10
 KEEPALIVE_INTERVAL = 3
 STREAM_TIMEOUT = 20
+# Some devices stop sending video after a few minutes without closing the connection (also in
+# the app, issue #71: ~150 s), reconnect quickly once the video has started.
+VIDEO_STALL_TIMEOUT = 5
 MAX_ATTEMPTS = 3
 BACKOFF = 1
 
@@ -814,13 +817,15 @@ async def _session(  # pylint: disable=too-many-locals
     unknown: set[tuple[int, int]] = set()
     try:
         while True:
-            stale = [
-                k for k, v in seen.items() if time.monotonic() - v > STREAM_TIMEOUT
-            ]
-            if stale:
-                raise _Lost(f"no {stale[0]} for {STREAM_TIMEOUT} s")
+            timeouts = {
+                "video data": VIDEO_STALL_TIMEOUT if units else STREAM_TIMEOUT,
+                "keepalive response": STREAM_TIMEOUT,
+            }
+            for what, last in seen.items():
+                if time.monotonic() - last > timeouts[what]:
+                    raise _Lost(f"no {what} for {timeouts[what]} s")
             try:
-                async with asyncio.timeout(STREAM_TIMEOUT):
+                async with asyncio.timeout(min(timeouts.values())):
                     channel, code, body = await connection.recv()
             except TimeoutError:
                 continue
