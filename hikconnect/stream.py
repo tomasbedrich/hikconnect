@@ -38,6 +38,9 @@ STREAM_TIMEOUT = 20
 # Some devices stop sending video after a few minutes without closing the connection (also in
 # the app, issue #71: ~150 s), reconnect quickly once the video has started.
 VIDEO_STALL_TIMEOUT = 5
+# A new connection starts mid-GOP; seen keyframe intervals are up to ~6 s (issue #71). Frames
+# are passed through after that anyway, e.g. when encrypted video hides the NAL types.
+MAX_SKIPPED_FRAMES = 250
 MAX_ATTEMPTS = 3
 BACKOFF = 1
 
@@ -556,8 +559,9 @@ def _sniff_codec(payload: bytes) -> str | None:
     """Recognize the codec from an RTP payload carrying a parameter set."""
     if len(payload) < 2 or payload[0] & 0x80:
         return None
-    # H.265 VPS/SPS/PPS/aggregation packet; these first bytes are unused NAL types in H.264
-    if payload[0] >> 1 in (32, 33, 34, 48) and payload[1] == 1:
+    # H.265 VPS/SPS/PPS; these first bytes are unused NAL types in H.264 (an H.265 aggregation
+    # packet, 0x60, would be indistinguishable from an H.264 slice)
+    if payload[0] >> 1 in (32, 33, 34) and payload[1] == 1:
         return "h265"
     # H.264 SPS/STAP-A; H.265 first byte is never odd and 24 maps to reserved NAL types
     if payload[0] & 0x1F in (7, 24):
@@ -569,8 +573,11 @@ class _RtpDepay:
     """RFC 6184 (H.264) / RFC 7798 (H.265) payloads to Annex-B access units."""
 
     def __init__(self, codec: str | None):
+        # the player takes the codec from the media header (IDMXRTPDemux::InitDemux)
         self._codec = codec
-        self._sniffed = False
+        self._sniffed = codec is not None
+        if codec:
+            log.info("Stream codec: %s (from stream head)", codec)
         self._timestamp: int | None = None
         self._au = bytearray()
 
@@ -578,7 +585,7 @@ class _RtpDepay:
         if not self._sniffed:
             codec = _sniff_codec(payload)
             if codec:
-                log.info("Stream codec: %s (stream head says %s)", codec, self._codec)
+                log.info("Stream codec: %s (sniffed, stream head has none)", codec)
                 self._codec, self._sniffed = codec, True
         if not self._codec:
             return
@@ -887,12 +894,23 @@ async def live(
     pts = _make_clock()
     failures = 0
     while True:
-        streaming = False
+        streaming, skipped = False, 0  # type: bool, int | None
         try:
             async with aclosing(_session(await get_target(), key)) as units:
                 async for codec, timestamp, data in units:
                     streaming = True
-                    yield Frame(codec, pts(timestamp), data, _is_keyframe(data, codec))
+                    keyframe = _is_keyframe(data, codec)
+                    # frames before the first keyframe of a connection cannot be decoded
+                    if skipped is not None:
+                        if not keyframe and skipped < MAX_SKIPPED_FRAMES:
+                            skipped += 1
+                            continue
+                        if skipped:
+                            log.debug(
+                                "Skipped %d frames before the first keyframe", skipped
+                            )
+                        skipped = None
+                    yield Frame(codec, pts(timestamp), data, keyframe)
         except _RECOVERABLE as exc:
             failures = 0 if streaming else failures + 1
             if failures >= MAX_ATTEMPTS:

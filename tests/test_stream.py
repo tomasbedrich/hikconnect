@@ -290,13 +290,26 @@ def live(cloud, public_key=None, code=None):
 @pytest.mark.parametrize("hevc", [False, True])
 async def test_rtp(hevc):
     packets, units = rtp_stream(4, hevc)
-    async with FakeCloud(packets) as cloud:
+    video_format = b"\x05\x00" if hevc else b"\x00\x01"
+    head = base64.b64encode(b"IMKH\x01\x01\x00\x00\x04\x00" + video_format + bytes(28))
+    async with FakeCloud(packets, head) as cloud:
         frames = await collect(live(cloud), 3)
     assert [f.data for f in frames] == units[:3]
     assert {f.codec for f in frames} == {"h265" if hevc else "h264"}
     assert [f.keyframe for f in frames] == [True, False, False]
     assert [f.pts for f in frames] == [0, 3600, 7200]
     assert cloud.urls == ["ysproto://vtm/live?dev=X&chn=1&ssn=token1"]
+
+
+async def test_frames_before_keyframe_are_skipped():
+    packets, units = rtp_stream(3)
+    inter = rtp(
+        bytes([0x61]) + BODY[:20], 500
+    )  # non-IDR slice of a GOP started earlier
+    async with FakeCloud([inter] + packets) as cloud:
+        frames = await collect(live(cloud), 2)
+    assert [f.data for f in frames] == units[:2]
+    assert [f.pts for f in frames] == [0, 3600]
 
 
 async def test_keepalive_and_stop(monkeypatch):
@@ -374,7 +387,10 @@ async def test_ps_in_rtp():
 
 
 @pytest.mark.parametrize("code", [CODE, None])
-async def test_ps_encrypted(caplog, code):
+async def test_ps_encrypted(monkeypatch, caplog, code):
+    monkeypatch.setattr(
+        stream, "MAX_SKIPPED_FRAMES", 0
+    )  # undecrypted, no keyframe is seen
     encrypted = [SC + SPS_ENCRYPTED + SC + IDR_ENCRYPTED] * 2
     packets = ps_stream(encrypted, bytes.fromhex("8006000101100001"))
     async with FakeCloud(packets, PS_HEAD) as cloud:
