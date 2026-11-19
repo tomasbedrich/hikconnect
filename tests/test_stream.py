@@ -10,7 +10,7 @@ from contextlib import aclosing
 import pytest
 from aioresponses import aioresponses
 from cryptography.hazmat.primitives import hashes, hmac, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from yarl import URL
 
@@ -169,7 +169,7 @@ class FakeCloud:
     Fake VTM and VTDU servers.
 
     after: what the VTDU does when all packets are sent - "hold" the connection and answer
-    keepalives, "close" it or stay "silent".
+    keepalives, "close" it, stay "silent" or "repeat" the packets forever.
     """
 
     # pylint: disable=too-many-instance-attributes
@@ -262,6 +262,11 @@ class FakeCloud:
         else:
             for packet in self.packets:
                 writer.write(frame(packet, 0x01, 0xBE9))
+        while self.after == "repeat":
+            for packet in self.packets:
+                writer.write(frame(packet, 0x01, 0xBE9))
+            await writer.drain()
+            await asyncio.sleep(0.01)
         while self.after != "close":
             code, req = await self._read(reader, state)
             assert req[1] == [b"ssn1"]
@@ -374,10 +379,12 @@ async def test_ecdh_falls_back_to_plain(caplog):
 
 
 @pytest.mark.parametrize("stream_head", [PS_HEAD, b""])
-async def test_ps(stream_head):
+@pytest.mark.parametrize("ecdh", [False, True])
+async def test_ps(stream_head, ecdh):
+    key = ec.generate_private_key(ec.SECP256R1()) if ecdh else None
     units = rtp_stream(3)[1]
-    async with FakeCloud(ps_stream(units), stream_head) as cloud:
-        frames = await collect(live(cloud), 3)
+    async with FakeCloud(ps_stream(units), stream_head, private_key=key) as cloud:
+        frames = await collect(live(cloud, key and public_der(key)), 3)
     assert [f.data for f in frames] == units
     assert [f.keyframe for f in frames] == [True, False, False]
     assert [f.pts for f in frames] == [0, 3600, 7200]
@@ -461,6 +468,15 @@ async def test_nvr():
     ] * 2
 
 
+async def test_stream_without_video_is_an_error(monkeypatch):
+    monkeypatch.setattr(stream, "STREAM_TIMEOUT", 0.2)
+    audio = [rtp(b"audio", n, 112) for n in range(5)]
+    async with FakeCloud(audio, after="repeat") as cloud:
+        with pytest.raises(StreamError, match="no video data"):
+            await collect(live(cloud), 1)
+    assert len(cloud.urls) == 3
+
+
 async def test_error_after_failed_attempts():
     calls = []
     async with FakeCloud([]) as cloud:
@@ -526,7 +542,9 @@ class TestApi:
                 api.client.headers["sessionId"] = "session-id"
                 frames = await collect(api.live_stream("X", 2, main_stream=False), 3)
                 # some regional servers ignore the header (apiisgp, issue #6)
-                (token_request,) = mock.requests[("POST", URL(TOKEN_URL))]
+                (token_request,) = mock.requests[  # type: ignore[index]
+                    ("POST", URL(TOKEN_URL))
+                ]
                 assert token_request.kwargs["data"]["sessionId"] == "session-id"
         assert [f.data for f in frames] == units[:3]
         (url,) = cloud.urls
@@ -589,6 +607,14 @@ def test_depay_decrypts_by_last_packet():
         ("h264", 2, SC + IDR_ENCRYPTED + SC + SPS),
     ]
     assert depay.encrypted == 1
+
+
+def test_endless_access_unit_is_an_error(monkeypatch):
+    monkeypatch.setattr(stream, "MAX_UNIT_SIZE", 3000)
+    depay = stream._RtpDepay("h264")
+    with pytest.raises(ValueError, match="too big"):
+        for _ in range(4):
+            list(depay.feed(1, b"\x61" + BODY[:1000]))
 
 
 def test_foreign_ssrc_is_dropped():
@@ -698,7 +724,31 @@ def test_ecdh_media_chunks_are_joined():
     packets = [packet for chunk in chunks for packet in joiner.feed(chunk)]
     assert packets == [long, exact, short, exact, exact, long * 2]
     assert (joiner.joined, joiner.orphans) == (3, 1)
-    # a program stream passes through
-    assert list(stream._Joiner().feed(stream.PS_PACK + b"\0" * 1196)) == [
-        stream.PS_PACK + b"\0" * 1196
-    ]
+
+
+def test_ecdh_rtp_channel():
+    # read_body of the app: the RTP header stays in clear, the rest is a data package
+    packet = rtp(b"\x61payload", 5)
+    session = os.urandom(32)
+    envelope = stream._Envelope(ec.generate_private_key(ec.SECP256R1()))
+    envelope._session = session
+    body = bytes([packet[0] | 0x20]) + packet[1:12] + enc_data(session, 2, packet[12:])
+    assert stream._decrypt_media(envelope, 0x0C, body + b"\x00\x02") == packet
+    assert stream._decrypt_media(envelope, 0x0C, b"garbage") == b""
+
+
+def test_envelope_rejects_foreign_key_type():
+    rsa_key = public_der(rsa.generate_private_key(65537, 1024))
+    envelope = stream._Envelope(ec.generate_private_key(ec.SECP256R1()))
+    with pytest.raises(ValueError):
+        envelope._exchange(rsa_key)
+
+
+def test_malformed_responses_are_recoverable():
+    for url in ("no scheme", "ysproto://host/live", "ysproto://:1/live"):
+        with pytest.raises(ValueError):
+            stream._ysproto_host(url)
+    assert stream._ysproto_host("ysproto://[::1]:8554/live?x=1") == ("::1", 8554)
+    with pytest.raises(ValueError):
+        stream._field({7: [1]}, 7)
+    assert "result=0" in stream._describe({3: [b"not base64!"]})

@@ -21,8 +21,8 @@ import zlib
 from collections import Counter
 from contextlib import aclosing, suppress
 from functools import lru_cache
-from itertools import chain
 from typing import AsyncGenerator, Awaitable, Callable, Iterator, NamedTuple
+from urllib.parse import urlsplit
 
 import aiohttp
 from cryptography.hazmat.primitives import hashes, hmac, serialization
@@ -44,6 +44,8 @@ VIDEO_STALL_TIMEOUT = 5
 # are passed through after that anyway, e.g. when encrypted video hides the NAL types.
 MAX_SKIPPED_FRAMES = 250
 MAX_ATTEMPTS = 3
+# a broken stream which never ends an access unit must not eat the memory
+MAX_UNIT_SIZE = 8 * 1024 * 1024
 BACKOFF = 1
 
 # number of first access units described in debug logs
@@ -152,11 +154,28 @@ def _stream_info_req(url: str, vtm_stream_key: bytes = b"") -> bytes:
     )
 
 
+def _field(rsp: dict[int, list], field: int) -> bytes:
+    """A bytes field of a response, empty if missing."""
+    value = rsp.get(field, [b""])[0]
+    if not isinstance(value, bytes):
+        raise ValueError(f"Unexpected type of response field {field}")
+    return value
+
+
+def _media_head(encoded: bytes) -> bytes:
+    """The "IMKH" media header of a stream, empty if missing or broken."""
+    try:
+        head = base64.b64decode(encoded)
+    except ValueError:
+        return b""
+    return head if head[:4] == b"IMKH" and len(head) >= 14 else b""
+
+
 def _describe(rsp: dict[int, list]) -> str:
     """Response summary for debug logs, without tokens and keys."""
     text = f"result={_result(rsp)}, fields={sorted(rsp)}"
-    head = base64.b64decode(rsp.get(3, [b""])[0] + b"==")
-    if head[:4] == b"IMKH" and len(head) >= 14:
+    head = _media_head(_field(rsp, 3))
+    if head:
         system, video, audio = struct.unpack("<HHH", head[8:14])
         text += (
             f", media head system/video/audio format={system:#x}/{video:#x}/{audio:#x}"
@@ -173,8 +192,10 @@ def _frame(body: bytes, channel: int, code: int) -> bytes:
 
 
 def _ysproto_host(url: str) -> tuple[str, int]:
-    host, port = url.split("://", 1)[1].split("/", 1)[0].rsplit(":", 1)
-    return host.strip("[]"), int(port)
+    parts = urlsplit(url)
+    if not parts.hostname or not parts.port:
+        raise ValueError("No host and port in the stream server URL")
+    return parts.hostname, parts.port
 
 
 # --------------------------------------------------------------------------- ECDH envelope
@@ -212,6 +233,8 @@ class _Envelope:
 
     def _exchange(self, peer_public_key: bytes) -> bytes:
         peer = serialization.load_der_public_key(peer_public_key)
+        if not isinstance(peer, ec.EllipticCurvePublicKey):
+            raise ValueError("Unexpected type of the ECDH peer key")
         return self.private_key.exchange(ec.ECDH(), peer)
 
     def enc(self, data: bytes) -> bytes:
@@ -323,9 +346,9 @@ async def _negotiate(
     if _result(rsp) not in (0, RESULT_REDIRECT) or 7 not in rsp:
         raise _Lost(f"VTM refused the stream with result {_result(rsp)}")
     connection, rsp = await _request(
-        _ysproto_host(rsp[7][0].decode()),
+        _ysproto_host(_field(rsp, 7).decode()),
         peer_key,
-        _stream_info_req(url, rsp.get(5, [b""])[0]),
+        _stream_info_req(url, _field(rsp, 5)),
     )
     log.debug("VTDU response: %s", _describe(rsp))
     if _result(rsp) != 0:
@@ -561,11 +584,8 @@ def _is_keyframe(au: bytes, codec: str) -> bool:
 
 def _parse_stream_head(stream_head: bytes) -> tuple[str | None, str | None]:
     """Return (container, codec) from the base64 encoded 40-byte "IMKH" media header."""
-    try:
-        head = base64.b64decode(stream_head)
-    except ValueError:
-        head = b""
-    if len(head) < 12 or head[:4] != b"IMKH":
+    head = _media_head(stream_head)
+    if not head:
         return None, None
     system_format, video_format = struct.unpack("<HH", head[8:12])
     return (
@@ -627,6 +647,8 @@ class _RtpDepay:
             self._au.clear()
         self._timestamp, self._enc_type = timestamp, enc_type
         self._depay(payload, self._codec == "h265")
+        if len(self._au) > MAX_UNIT_SIZE:
+            raise ValueError("Access unit is too big")
 
     def _depay(self, payload: bytes, hevc: bool):
         header_size = 2 if hevc else 1
@@ -700,6 +722,8 @@ class _PsDemux:
                         | body[7] >> 1
                     )
                 self._es += body[3 + body[2] :]
+                if len(self._es) > MAX_UNIT_SIZE:
+                    raise ValueError("Access unit is too big")
             pos = end
         del buf[:pos]
 
@@ -725,6 +749,44 @@ class _PsDemux:
             yield self._codec, pts, es
 
 
+class _Joiner:
+    """
+    RTP packets from the chunks of the ECDH media channel: a 1376-byte packet comes as
+    1200 + 176 bytes. A full chunk is followed by the rest of its packet, unless the next chunk
+    starts with an RTP header of the same SSRC (the packet was exactly one chunk long).
+
+    The app does not join the chunks, the rule comes from the streams seen in issue #6.
+    """
+
+    def __init__(self):
+        self._buf = bytearray()
+        self._ssrc: bytes | None = None
+        self.joined = self.orphans = 0
+
+    def feed(self, chunk: bytes) -> Iterator[bytes]:
+        starts_packet = len(chunk) >= 12 and chunk[0] >> 6 == 2
+        # ponytail: the first chunk looking like RTP sets the SSRC; if it is the rest of an older
+        # packet, no video comes and the connection is replaced after STREAM_TIMEOUT
+        if starts_packet and self._ssrc is None:
+            self._ssrc = chunk[8:12]
+        if starts_packet and chunk[8:12] == self._ssrc:
+            if self._buf:
+                yield bytes(self._buf)
+                self._buf.clear()
+            if len(chunk) < ECDH_MEDIA_CHUNK:
+                yield chunk
+                return
+        elif not self._buf:
+            self.orphans += 1  # the rest of a packet sent before the connection
+            return
+        else:
+            self.joined += 1
+        self._buf += chunk
+        if len(chunk) < ECDH_MEDIA_CHUNK:
+            yield bytes(self._buf)
+            self._buf.clear()
+
+
 class _Demuxer:  # pylint: disable=too-many-instance-attributes
     """Media packets of either container to access units."""
 
@@ -733,18 +795,19 @@ class _Demuxer:  # pylint: disable=too-many-instance-attributes
         self._container = "rtp" if self._hint == "rtp" else None
         self._rtp_carries_ps: bool | None = None
         self.dropped = Counter[int]()
-        self.ext_profiles = Counter[int]()
         self.seq_gaps = 0
         self.foreign_ssrc = 0
         self._ssrc: bytes | None = None
-        self._last: tuple[int, int] | None = None  # sequence number and length
+        self._seq: int | None = None
+        self.joiner = _Joiner()
         self.rtp = _RtpDepay(codec, key)
         self._ps = _PsDemux()
         self._key = key
         self._enc_type = 0
         self._warned = False
 
-    def feed(self, packet: bytes) -> Iterator[_Unit]:
+    def feed(self, packet: bytes, chunked: bool = False) -> Iterator[_Unit]:
+        """Feed a media packet, `chunked` if it comes from the ECDH media channel."""
         if self._container is None:
             if packet[:3] == b"\x00\x00\x01":
                 self._container = "ps"
@@ -759,15 +822,18 @@ class _Demuxer:  # pylint: disable=too-many-instance-attributes
                     self._hint,
                 )
         if self._container == "ps":
+            # a byte stream, the chunks need no joining
             yield from self._decrypted(self._ps.feed(packet))
-        elif self._container == "rtp" and len(packet) >= 12 and packet[0] >> 6 == 2:
-            yield from self._feed_rtp(packet)
+        elif self._container == "rtp":
+            packets = self.joiner.feed(packet) if chunked else (packet,)
+            for rtp in packets:
+                if len(rtp) >= 12 and rtp[0] >> 6 == 2:
+                    yield from self._feed_rtp(rtp)
 
     def _feed_rtp(self, packet: bytes) -> Iterator[_Unit]:
-        start, enc_type, profile = 12 + 4 * (packet[0] & 0x0F), 0, None
+        start, enc_type = 12 + 4 * (packet[0] & 0x0F), 0
         if packet[0] & 0x10 and len(packet) >= start + 4:
             ext = start + 4 + 4 * int.from_bytes(packet[start + 2 : start + 4], "big")
-            profile = int.from_bytes(packet[start : start + 2], "big")
             # the device encryption descriptor (hik_rtp_parse_ext_info)
             if packet[start : start + 2] == b"\x40\x00":
                 enc_type = _encrypt_type(packet[start + 4 : ext])
@@ -777,10 +843,7 @@ class _Demuxer:  # pylint: disable=too-many-instance-attributes
         if end <= start or packet[1] & 0x7F != RTP_VIDEO_PAYLOAD_TYPE:
             if not self.dropped[packet[1] & 0x7F]:
                 log.debug(
-                    "Dropping RTP payload type %d, %d B, previous video packet %s",
-                    packet[1] & 0x7F,
-                    len(packet),
-                    self._last and f"{self._last[1]} B",
+                    "Dropping RTP payload type %d, %d B", packet[1] & 0x7F, len(packet)
                 )
             self.dropped[packet[1] & 0x7F] += 1
             return
@@ -791,16 +854,14 @@ class _Demuxer:  # pylint: disable=too-many-instance-attributes
         if packet[8:12] != self._ssrc:
             self.foreign_ssrc += 1
             return
-        if profile is not None:
-            self.ext_profiles[profile] += 1
         if enc_type and not self._enc_type:
             log.info("Device encryption type: %#x (RTP extension)", enc_type)
             self._enc_type = enc_type
             self._warn()
         seq = int.from_bytes(packet[2:4], "big")
-        if self._last and seq != (self._last[0] + 1) & 0xFFFF:
+        if self._seq is not None and seq != (self._seq + 1) & 0xFFFF:
             self.seq_gaps += 1
-        self._last = seq, len(packet)
+        self._seq = seq
         payload = packet[start:end]
         if self._rtp_carries_ps is None:
             self._rtp_carries_ps = payload[:4] == PS_PACK
@@ -881,81 +942,42 @@ def _decrypt_media(
     return bytes([head[0] & 0xDF]) + head[1:] + data if head else data
 
 
-class _Joiner:
-    """
-    RTP packets from the chunks of the ECDH media channel: a 1376-byte packet comes as
-    1200 + 176 bytes. A full chunk is followed by the rest of its packet, unless the next chunk
-    starts with an RTP header of the same SSRC (the packet was exactly one chunk long).
-    """
-
-    def __init__(self):
-        self._buf = bytearray()
-        self._ssrc: bytes | None = None
-        self.joined = self.orphans = 0
-
-    def feed(self, chunk: bytes) -> Iterator[bytes]:
-        rtp = len(chunk) >= 12 and chunk[0] >> 6 == 2
-        if self._ssrc is None:
-            # a program stream is a byte stream, its demuxer joins the chunks itself
-            if chunk[:3] == b"\x00\x00\x01":
-                yield chunk
-                return
-            if rtp:
-                self._ssrc = chunk[8:12]
-        if rtp and chunk[8:12] == self._ssrc:
-            if self._buf:
-                yield bytes(self._buf)
-                self._buf.clear()
-        elif not self._buf:
-            self.orphans += 1  # the rest of a packet sent before the connection
-            return
-        else:
-            self.joined += 1
-        self._buf += chunk
-        if len(chunk) < ECDH_MEDIA_CHUNK:
-            yield bytes(self._buf)
-            self._buf.clear()
-
-
 async def _session(  # pylint: disable=too-many-locals
     target: StreamTarget, key: bytes | None
 ) -> AsyncGenerator[_Unit, None]:
     """Open one stream connection and yield access units until it dies."""
     connection, rsp = await _open(target)
-    ssn = _pb_str(1, rsp.get(4, [b""])[0])
+    ssn = _pb_str(1, _field(rsp, 4))
     keepalive = asyncio.create_task(_keepalive(connection, ssn))
     keepalive.add_done_callback(lambda task: task.cancelled() or task.exception())
     # the stream has its own ECDH session, opened by the server with our connection key
     envelope = connection.envelope and _Envelope(connection.envelope.private_key)
-    demuxer, joiner = _Demuxer(rsp.get(3, [b""])[0], key), _Joiner()
-    started, units, frames_by_channel = time.monotonic(), 0, Counter[int]()
+    demuxer = _Demuxer(_field(rsp, 3), key)
+    started = last_video = last_keepalive = time.monotonic()
+    units, frames_by_channel = 0, Counter[int]()
     first_slices = Counter[bool | None]()
-    seen = dict.fromkeys(("video data", "keepalive response"), started)
     unknown: set[tuple[int, int]] = set()
     try:
         while True:
-            timeouts = {
-                "video data": VIDEO_STALL_TIMEOUT if units else STREAM_TIMEOUT,
-                "keepalive response": STREAM_TIMEOUT,
-            }
-            for what, last in seen.items():
-                if time.monotonic() - last > timeouts[what]:
-                    raise _Lost(f"no {what} for {timeouts[what]} s")
+            now = time.monotonic()
+            video_timeout = VIDEO_STALL_TIMEOUT if units else STREAM_TIMEOUT
+            if now - last_video > video_timeout:
+                raise _Lost(f"no video data for {video_timeout} s")
+            if now - last_keepalive > STREAM_TIMEOUT:
+                raise _Lost(f"no keepalive response for {STREAM_TIMEOUT} s")
             try:
-                async with asyncio.timeout(min(timeouts.values())):
+                async with asyncio.timeout(min(video_timeout, STREAM_TIMEOUT)):
                     channel, code, body = await connection.recv()
             except TimeoutError:
                 continue
             frames_by_channel[channel] += 1
             packet = _decrypt_media(envelope, channel, body)
             if packet:
-                if seen["video data"] == started:
-                    log.debug("First media packet: %d B", len(packet))
-                seen["video data"] = time.monotonic()
-                packets = (
-                    joiner.feed(packet) if channel == CHANNEL_ECDH_MEDIA else [packet]
-                )
-                for unit in chain.from_iterable(map(demuxer.feed, packets)):
+                # until the first access unit only access units count, a stream of packets
+                # which give no video (audio only, wrongly joined chunks) is replaced
+                if units:
+                    last_video = time.monotonic()
+                for unit in demuxer.feed(packet, channel == CHANNEL_ECDH_MEDIA):
                     units += 1
                     # tells a wrong key or algorithm from right decryption
                     first_slice_valid = _first_slice_valid(unit[2], unit[0])
@@ -973,8 +995,10 @@ async def _session(  # pylint: disable=too-many-locals
                             demuxer.rtp.encrypted,
                         )
                     yield unit
+                    # the consumer may have been slow
+                    last_video = time.monotonic()
             elif packet is None and code == MSG_KEEPALIVE_RSP:
-                seen["keepalive response"] = time.monotonic()
+                last_keepalive = time.monotonic()
                 connection.check_keepalive(channel, body)
             elif packet is None and (channel, code) not in unknown:
                 unknown.add((channel, code))
@@ -988,8 +1012,8 @@ async def _session(  # pylint: disable=too-many-locals
         log.info(
             "Stream connection closed after %.0f s, %d access units, frames by channel %s, "
             "dropped RTP packets %d, most common payload types %s, video packets of other "
-            "SSRC %d, RTP sequence gaps %d, RTP extension profiles %s, joined media chunks %d, "
-            "orphan media chunks %d, encrypted access units %d, first slice valid %s",
+            "SSRC %d, RTP sequence gaps %d, joined media chunks %d, orphan media chunks %d, "
+            "encrypted access units %d, first slice valid %s",
             time.monotonic() - started,
             units,
             {f"{k:#x}": v for k, v in frames_by_channel.items()},
@@ -997,9 +1021,8 @@ async def _session(  # pylint: disable=too-many-locals
             demuxer.dropped.most_common(3),
             demuxer.foreign_ssrc,
             demuxer.seq_gaps,
-            {f"{k:#x}": v for k, v in demuxer.ext_profiles.items()},
-            joiner.joined,
-            joiner.orphans,
+            demuxer.joiner.joined,
+            demuxer.joiner.orphans,
             demuxer.rtp.encrypted,
             dict(first_slices),
         )
