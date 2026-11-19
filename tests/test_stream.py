@@ -12,6 +12,7 @@ from aioresponses import aioresponses
 from cryptography.hazmat.primitives import hashes, hmac, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from yarl import URL
 
 from hikconnect import stream
 from hikconnect.api import HikConnect
@@ -252,8 +253,12 @@ class FakeCloud:
             key, session = ec.generate_private_key(ec.SECP256R1()), os.urandom(32)
             package = enc_req(key, self.vtm_client_public, session, b"")
             writer.write(frame(package, 0x0B, 0x13C))
-            for seq, packet in enumerate(self.packets):
-                writer.write(frame(enc_data(session, seq + 2, packet), 0x0B, 0x2C84))
+            # the ECDH media channel carries chunks of at most 1200 bytes (issue #6)
+            chunks = [
+                p[i : i + 1200] for p in self.packets for i in range(0, len(p), 1200)
+            ]
+            for seq, chunk in enumerate(chunks):
+                writer.write(frame(enc_data(session, seq + 2, chunk), 0x0B, 0x2C84))
         else:
             for packet in self.packets:
                 writer.write(frame(packet, 0x01, 0xBE9))
@@ -425,6 +430,37 @@ async def test_rtp_encrypted(monkeypatch, caplog, code):
         assert caplog.text.count("Video is encrypted by the device") == 1
 
 
+async def test_nvr():
+    """NVR-4-E-X (issue #6): ECDH, H.265 in 1376-byte RTP packets, AES-128 by the device."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    aes = Cipher(algorithms.AES(CODE.encode().ljust(16, b"\0")), modes.ECB())
+    ext = bytes.fromhex("40000002 8006000101200001")
+    nals = [
+        bytes([nal_type << 1, 1]) + BODY[:size]
+        for nal_type, size in ((32, 20), (33, 40), (34, 20), (19, 2700))
+    ]
+    packets = []
+    for timestamp in (0, 3600, 7200):
+        head = bytes([0x90]) + rtp(b"", timestamp)[1:] + ext
+        for nal in nals:
+            size = (len(nal) - 2) // 16 * 16
+            nal = nal[:2] + aes.encryptor().update(nal[2 : 2 + size]) + nal[2 + size :]
+            if len(nal) < 1000:
+                packets.append(head + nal)
+                continue
+            parts = [nal[i : i + 1349] for i in range(2, len(nal), 1349)]
+            for i, part in enumerate(parts):
+                flags = (0x80 if i == 0 else 0) | (0x40 if part is parts[-1] else 0)
+                packets.append(head + bytes([49 << 1, 1, flags | nal[0] >> 1]) + part)
+    assert {len(packet) for packet in packets} >= {1376}
+    head = base64.b64encode(b"IMKH\x01\x01\x00\x00\x04\x00\x05\x00" + bytes(28))
+    async with FakeCloud(packets, head, private_key=key) as cloud:
+        frames = await collect(live(cloud, public_der(key), CODE), 2)
+    assert [(f.codec, f.data, f.keyframe) for f in frames] == [
+        ("h265", b"".join(SC + nal for nal in nals), True)
+    ] * 2
+
+
 async def test_error_after_failed_attempts():
     calls = []
     async with FakeCloud([]) as cloud:
@@ -487,7 +523,11 @@ class TestApi:
                     },
                 )
                 self.mock_http(mock, vtm)
+                api.client.headers["sessionId"] = "session-id"
                 frames = await collect(api.live_stream("X", 2, main_stream=False), 3)
+                # some regional servers ignore the header (apiisgp, issue #6)
+                (token_request,) = mock.requests[("POST", URL(TOKEN_URL))]
+                assert token_request.kwargs["data"]["sessionId"] == "session-id"
         assert [f.data for f in frames] == units[:3]
         (url,) = cloud.urls
         assert url.startswith(
