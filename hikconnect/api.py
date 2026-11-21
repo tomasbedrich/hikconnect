@@ -91,7 +91,7 @@ class HikConnect:
             res_json = await res.json()
         log.debug("Got login response '%s'", res_json)
 
-        if res_json["meta"]["code"] in (1013, 1014):
+        if res_json["meta"]["code"] in (1013, 1014, 1226):
             raise LoginError(
                 "Login failed, probably wrong username/password combination."
             )
@@ -108,6 +108,11 @@ class HikConnect:
             self.BASE_URL = f"https://{new_api_domain}"
             log.debug("Switching API domain to '%s' (code 1100)", self.BASE_URL)
             return await self.login(username, password)
+
+        if "loginSession" not in res_json:
+            raise LoginError(
+                f"Login failed with code {res_json['meta']['code']}: {res_json['meta'].get('message')}"
+            )
 
         try:
             session_id = res_json["loginSession"]["sessionId"]

@@ -101,14 +101,25 @@ class TestLogin:
                 api.is_refresh_login_needed()
             ), "Should be True because of old timestamp"
 
-    async def test_failed_login(self, api):
+    @pytest.mark.parametrize("code", [1013, 1226])
+    async def test_failed_login(self, api, code):
         with aioresponses() as mock:
             mock.post(
                 "https://api.hik-connect.com/v3/users/login/v2",
-                payload={"meta": {"code": 1013}},
+                payload={"meta": {"code": code}},
             )
-            with pytest.raises(LoginError):
+            with pytest.raises(LoginError, match=".*wrong username/password.*"):
                 await api.login("username", "wrong_password")
+            assert api.login_valid_until is None
+
+    async def test_failed_login_unknown_code(self, api):
+        with aioresponses() as mock:
+            mock.post(
+                "https://api.hik-connect.com/v3/users/login/v2",
+                payload={"meta": {"code": 9999, "message": "nope"}},
+            )
+            with pytest.raises(LoginError, match="Login failed with code 9999: nope"):
+                await api.login("username", "password")
             assert api.login_valid_until is None
 
     async def test_failed_login_captcha(self, api):
