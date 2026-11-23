@@ -1,10 +1,13 @@
+# pylint: disable=too-many-lines
+import asyncio
 import datetime
 import hashlib
 import json
 import logging
+import socket
 import time
 from base64 import b64decode, urlsafe_b64decode
-from contextlib import aclosing, contextmanager
+from contextlib import aclosing, asynccontextmanager, contextmanager
 from functools import partial
 from typing import AsyncIterator
 
@@ -21,6 +24,7 @@ from hikconnect.exceptions import (
     UnlockError,
 )
 from hikconnect.stream import Frame
+from hikconnect.talk import Talk, open_talk
 
 log = logging.getLogger(__name__)
 
@@ -771,21 +775,7 @@ class HikConnect:
         )
 
         # tokens are single-use: one for the ECDH attempt, one for the plain fallback
-        async with self.client.post(
-            f"{self.BASE_URL}/api/user/token/get",
-            # the app copies the session ID into form bodies (CommonParamInterceptor),
-            # some regional servers ignore the header here
-            data={
-                "sessionId": self.client.headers.get("sessionId", ""),
-                "featureCode": _HikConnectClient.FEATURE_CODE,
-                "count": 2,
-            },
-        ) as res:
-            res_json = await res.json(content_type=None)
-        tokens = res_json.get("tokenArray") or []
-        log.debug("Got %d stream tokens", len(tokens))
-        if not tokens:
-            raise StreamError(f"Unable to get stream tokens: {res_json!r}")
+        tokens = await self._get_stream_tokens(2)
 
         host, port = vtm["domain"], int(vtm["port"])
         urls = [
@@ -801,6 +791,75 @@ class HikConnect:
             b64decode(public_key["key"]) if public_key.get("key") else None,
             int(public_key.get("version") or 1),
         )
+
+    async def _get_stream_tokens(self, count: int) -> list[str]:
+        async with self.client.post(
+            f"{self.BASE_URL}/api/user/token/get",
+            # the app copies the session ID into form bodies (CommonParamInterceptor),
+            # some regional servers ignore the header here
+            data={
+                "sessionId": self.client.headers.get("sessionId", ""),
+                "featureCode": _HikConnectClient.FEATURE_CODE,
+                "count": count,
+            },
+        ) as res:
+            res_json = await res.json(content_type=None)
+        tokens = res_json.get("tokenArray") or []
+        log.debug("Got %d stream tokens", len(tokens))
+        if not tokens:
+            raise StreamError(f"Unable to get stream tokens: {res_json!r}")
+        return tokens
+
+    @asynccontextmanager
+    async def talk(self, device_serial: str, channel: int) -> AsyncIterator[Talk]:
+        """
+        Open a two-way audio session with a device through the cloud TTS server.
+
+        Use as `async with api.talk(serial, channel) as session:`. `session.codec` is the codec
+        announced by the device (`hikconnect.talk.CODECS`, mostly 1 = G.711 µ-law 8 kHz);
+        `session.send()` takes audio already encoded in it, `session.received()` yields the
+        device's audio. Use channel 0 to talk to an NVR itself.
+
+        Raises:
+            StreamError: if the device has no TTS server or the server refuses the talk.
+        """
+        tts = await self._get_tts_server(device_serial)
+        port = int(tts["port"])
+        # the app puts the resolved address of the domain into the URL (IntercomCore)
+        try:
+            infos = await asyncio.get_running_loop().getaddrinfo(
+                tts["domain"], port, type=socket.SOCK_STREAM
+            )
+        except OSError as exc:
+            raise StreamError(f"Unable to resolve TTS server: {exc!r}") from exc
+        host = infos[0][4][0]
+        token = (await self._get_stream_tokens(1))[0]
+        url = (
+            f"tts://{f'[{host}]' if ':' in host else host}:{port}/talk?dev={device_serial}"
+            f"&chann={channel}&encodetype=1&authssn={token}&cln=55&talktype=0"
+        )
+        async with await open_talk(host, port, url) as session:
+            yield session
+
+    async def _get_tts_server(self, device_serial: str) -> dict:
+        limit, offset, tts = 50, 0, None
+        while True:
+            async with self.client.get(
+                f"{self.BASE_URL}/v3/userdevices/v1/devices/pagelist?groupId=-1&limit={limit}&offset={offset}&filter=TTS"
+            ) as res:
+                res_json = await res.json()
+            log.debug("Got talk server list response '%s'", res_json)
+            tts = (res_json.get("TTS") or res_json.get("ttsInfos") or {}).get(
+                device_serial
+            )
+            offset += limit
+            if tts or not (res_json.get("page") or {}).get("hasNext"):
+                break
+        if not tts or not tts.get("domain") or not tts.get("port"):
+            raise StreamError(
+                f"Device '{device_serial}' has no cloud talk server: {res_json!r}"
+            )
+        return tts
 
     async def _get_stream_servers(self, device_serial: str, channel: int):
         """Return VTM server address and ECDH public key (may be empty) of a device."""
