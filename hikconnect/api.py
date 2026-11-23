@@ -238,6 +238,7 @@ class HikConnect:
             "wifi_signal": wifi_signal,
             "update_available": cls._parse_update_available(status),
             "is_encrypted": cls._parse_is_encrypted(status),
+            "talk": cls._parse_talk(device),
         }
 
     @staticmethod
@@ -261,6 +262,15 @@ class HikConnect:
         # "Image and Video Encryption" with the device verification code
         value = status.get("isEncrypt")
         return bool(value) if value is not None else None
+
+    @staticmethod
+    def _parse_talk(device):
+        # capability "support_talk" (id 2): 0 = none, 1 = full duplex, 3 = push to talk
+        # (StreamConst.TALK_FULL_DUPLEX / TALK_HALF_DUPLEX of the app)
+        try:
+            return int(json.loads(device["supportExt"]).get("2", 0))
+        except (KeyError, TypeError, ValueError):
+            return 0
 
     @staticmethod
     def _parse_locks(status):
