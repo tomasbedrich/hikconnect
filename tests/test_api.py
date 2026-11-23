@@ -342,6 +342,7 @@ async def test_get_devices(api, get_devices_response):
         assert devices[0]["wan_ip"] == "81.81.81.81"
         assert devices[0]["is_online"] is True
         assert devices[0]["is_encrypted"] is False
+        assert devices[0]["talk"] == 1
         assert devices[0]["wifi_signal"] == 75
         assert devices[0]["update_available"] is False
         # device without connectionInfos/statusInfos/wifiInfos entry
