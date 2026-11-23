@@ -857,7 +857,7 @@ class HikConnect:
             async with self.client.get(
                 f"{self.BASE_URL}/v3/userdevices/v1/devices/pagelist?groupId=-1&limit={limit}&offset={offset}&filter=TTS"
             ) as res:
-                res_json = await res.json()
+                res_json = await res.json(content_type=None)
             log.debug("Got talk server list response '%s'", res_json)
             tts = (res_json.get("TTS") or res_json.get("ttsInfos") or {}).get(
                 device_serial
