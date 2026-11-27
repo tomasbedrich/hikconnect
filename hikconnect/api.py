@@ -866,6 +866,10 @@ class HikConnect:
         if code != 200 or "data" not in res_json:
             raise DeviceOffline()
 
+        if not res_json["data"]:
+            # the API returns empty data when no call is in progress
+            return {"status": self.CALL_STATUS_MAPPING[1], "info": {}}
+
         data = json.loads(res_json["data"])
         try:
             status = self.CALL_STATUS_MAPPING[data["callStatus"]]

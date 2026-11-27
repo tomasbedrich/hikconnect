@@ -631,6 +631,24 @@ async def test_get_call_status_uses_dedicated_headerless_session(api):
     assert api.client.headers["clientType"] == "55"
 
 
+async def test_get_call_status_empty_data_means_idle(api):
+    device_serial = "D12345678"
+    api.client.set_session_id("session-id")
+
+    with aioresponses() as mock:
+        mock.get(
+            f"https://api.hik-connect.com/v3/devconfig/v1/call/{device_serial}/status"
+            "?clientType=55&featureCode=deadbeef&lang=en-US&sessionId=session-id",
+            payload={
+                "data": "",
+                "meta": {"code": 200, "message": "操作成功", "moreInfo": None},
+            },
+        )
+        result = await api.get_call_status(device_serial)
+
+    assert result == {"status": "idle", "info": {}}
+
+
 async def test_get_call_status_before_login_raises_device_offline(api):
     with pytest.raises(DeviceOffline):
         await api.get_call_status("D12345678")
